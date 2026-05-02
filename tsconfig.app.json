@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist/out-tsc/app"
+  },
+  "files": [
+    "src/background/index.ts",
+    "src/content-script/index.ts",
+    "src/side-panel/main.ts"
+  ],
+  "include": ["src/**/*.ts"]
+}

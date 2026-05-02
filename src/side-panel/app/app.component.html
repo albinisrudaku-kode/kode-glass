@@ -1,0 +1,385 @@
+<tui-root [attr.tuiTheme]="theme()">
+  <main class="shell">
+    <header class="header">
+      <div class="title-block">
+        <h1>Kode Glass</h1>
+        <p title="{{ pageOrigin() }}">{{ pageOrigin() }}</p>
+      </div>
+
+      <div class="header-actions">
+        <button
+          class="theme-toggle"
+          appearance="secondary"
+          size="s"
+          tuiButton
+          type="button"
+          [attr.aria-label]="themeToggleLabel()"
+          [title]="themeToggleLabel()"
+          (click)="toggleTheme()"
+        >
+          <tui-icon [icon]="themeIcon()" />
+        </button>
+      </div>
+    </header>
+
+    <section class="surface page-summary" aria-label="Current page">
+      <div class="page-title">
+        <span class="eyebrow">Current page</span>
+        <strong title="{{ state.pageTitle() }}">{{ state.pageTitle() }}</strong>
+      </div>
+
+      <div class="audit-picker" aria-label="Audit standard">
+        <span class="eyebrow">Audit scope</span>
+        <div class="option-row segmented-group" tuiAppearance="secondary" tuiButtonGroup>
+          @for (standard of auditStandards; track standard.id) {
+            <button type="button" [attr.aria-pressed]="state.auditSettings().standard === standard.id" [class.active]="state.auditSettings().standard === standard.id" (click)="setAuditStandard(standard.id)">
+              {{ standard.label }}
+            </button>
+          }
+        </div>
+      </div>
+
+      <tui-loader class="stats-loader" size="m" [loading]="state.analysisLoading()" [overlay]="true">
+        <div class="stats" aria-label="Analysis summary">
+          <span class="metric metric--danger">
+            <strong>{{ state.totalViolations() }}</strong>
+            <span tuiBadge size="s" appearance="negative">Issues</span>
+          </span>
+          <span class="metric">
+            <strong>{{ state.totalHeadings() }}</strong>
+            <span tuiBadge size="s" appearance="info">Headings</span>
+          </span>
+          <span class="metric">
+            <strong>{{ state.totalLandmarks() }}</strong>
+            <span tuiBadge size="s" appearance="positive">Landmarks</span>
+          </span>
+        </div>
+      </tui-loader>
+    </section>
+
+    @if (state.activeNode(); as activeNode) {
+      <section class="surface active-node" aria-label="Current accessible node">
+        <div class="active-node-content">
+          <span class="eyebrow">Inspecting</span>
+          <strong title="{{ activeNode.name || activeNode.selector }}">{{ activeNode.name || 'Unnamed element' }}</strong>
+          @if (activeNode.description) {
+            <span class="node-description">{{ activeNode.description }}</span>
+          }
+        </div>
+        <span class="node-role" tuiBadge size="s" appearance="positive">{{ activeNode.role }}</span>
+        @if (activeNode.state.length) {
+          <span class="node-state">{{ activeNode.state.join(', ') }}</span>
+        }
+      </section>
+    }
+
+    <section class="surface actions tools-panel" aria-label="Analysis actions">
+      <div class="primary-actions">
+        <button class="analyze-button" appearance="primary" size="s" tuiButton type="button" [disabled]="state.analysisLoading()" (click)="requestAnalysis()">
+          Analyze page
+        </button>
+
+        <button class="reset-button" appearance="secondary" size="s" tuiButton type="button" aria-label="Reset analysis" title="Reset analysis" (click)="resetAnalysis()">
+          <tui-icon icon="@tui.rotate-ccw" />
+        </button>
+      </div>
+
+      <div class="tool-group">
+        <label class="tool-row">
+          <span class="tool-copy">
+            <span class="eyebrow">Overlay</span>
+            <strong>Enable visual layers</strong>
+          </span>
+          <input tuiSwitch type="checkbox" size="s" [ngModel]="state.layerVisibility().pageOverlay" (ngModelChange)="setPageOverlayEnabled($event)" />
+        </label>
+
+        @if (state.layerVisibility().pageOverlay) {
+          <tui-filter class="layer-actions" size="s" [items]="layerFilterItems" [ngModel]="selectedLayerFilters()" (ngModelChange)="setLayerFilters($event)" />
+        }
+      </div>
+
+      <div class="tool-group reader-controls" aria-label="Screen reader preview">
+        <div class="preview-mode">
+          <div class="preview-heading">
+            <span class="eyebrow">Preview</span>
+            @if (previewMode() !== 'off') {
+              <button class="preview-clear" type="button" (click)="setPreviewMode('off')">Turn it off</button>
+            }
+          </div>
+
+          <div class="mode-cards" role="group" aria-label="Preview mode">
+            <button class="mode-card" type="button" [attr.aria-pressed]="previewMode() === 'reader'" [class.active]="previewMode() === 'reader'" (click)="setPreviewMode(previewMode() === 'reader' ? 'off' : 'reader')">
+              <span class="mode-mark" aria-hidden="true"></span>
+              <span>Reader</span>
+            </button>
+
+            <button class="mode-card" type="button" [attr.aria-pressed]="previewMode() === 'inspect'" [class.active]="previewMode() === 'inspect'" (click)="setPreviewMode(previewMode() === 'inspect' ? 'off' : 'inspect')">
+              <span class="mode-mark" aria-hidden="true"></span>
+              <span>Inspect</span>
+            </button>
+          </div>
+        </div>
+
+        @if (previewMode() === 'reader') {
+          <div class="speech-controls">
+            <label class="tool-row">
+              <span class="tool-copy">
+                <span class="eyebrow">Audio</span>
+                <strong>Enable Narrator</strong>
+              </span>
+              <input tuiSwitch type="checkbox" size="s" [ngModel]="state.readerMode().speak" (ngModelChange)="setReaderSpeech($event)" />
+            </label>
+
+            @if (state.readerMode().speak) {
+              <div class="reader-settings" aria-label="Reader voice settings">
+                <label class="reader-field">
+                  <span>Voice</span>
+                  <tui-textfield class="voice-select" tuiChevron tuiTextfieldSize="s" [tuiTextfieldCleaner]="false">
+                    <input
+                      placeholder="System default"
+                      tuiComboBox
+                      [ngModel]="selectedVoiceLabel()"
+                      (ngModelChange)="setReaderVoiceLabel($event)"
+                    />
+                    <tui-data-list-wrapper *tuiDropdown size="s" [items]="voiceComboItems() | tuiFilterByInput" />
+                  </tui-textfield>
+                </label>
+
+                <label class="reader-field">
+                  <span>Speed {{ state.readerMode().rate ?? 0.92 }}</span>
+                  <input tuiSlider type="range" min="0.5" max="1" step="0.01" [style.--tui-thumb-size.px]="16" [segments]="1" [value]="state.readerMode().rate ?? 0.92" (input)="setReaderRate($event)">
+                </label>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </section>
+
+    <nav class="tabs" aria-label="Panel sections">
+      @for (tab of tabs; track tab.id) {
+        <button appearance="outline" size="s" tuiButton type="button" [tuiAppearanceMode]="activeTab() === tab.id ? 'checked' : ''" [class.active]="activeTab() === tab.id" (click)="selectTab(tab.id)">
+          {{ tab.label }}
+        </button>
+      }
+    </nav>
+
+    <tui-loader class="panel-loader" size="m" [loading]="state.analysisLoading()" [overlay]="true">
+    <section class="panel" aria-live="polite">
+      @switch (activeTab()) {
+        @case ('violations') {
+          @if (state.hasViolations()) {
+            @if (state.selectedViolation(); as selectedViolation) {
+              <section class="focus-filter" aria-label="Filtered overlay selection">
+                <div>
+                  <strong class="eyebrow">Overlay selection</strong>
+                  <span title="{{ selectedViolation.selector }}">{{ selectedViolation.selector }}</span>
+                </div>
+
+                <button type="button" tuiButton size="s" appearance="outline" (click)="clearSelectedViolation()">Show all</button>
+              </section>
+            }
+
+            <section class="severity-row" aria-label="Issue severity counts">
+              <span class="severity critical"><strong>{{ state.severityCounts().critical }}</strong> Critical</span>
+              <span class="severity warning"><strong>{{ state.severityCounts().warning }}</strong> Warning</span>
+              <span class="severity info"><strong>{{ state.severityCounts().info }}</strong> Info</span>
+            </section>
+
+            <ul class="violation-groups">
+              @for (group of state.visibleViolationGroups(); track group.id) {
+                <li class="finding-card" [class.finding-card--expanded]="isViolationGroupExpanded(group.id)">
+                  <button
+                    class="finding-header-button"
+                    type="button"
+                    [attr.aria-controls]="'violation-panel-' + group.id"
+                    [attr.aria-expanded]="isViolationGroupExpanded(group.id)"
+                    (click)="toggleViolationGroup(group.id)"
+                  >
+                    <div class="finding-main">
+                      <span
+                        class="severity-dot"
+                        [class.critical]="group.severity === 'critical'"
+                        [class.warning]="group.severity === 'warning'"
+                        [class.info]="group.severity === 'info'"
+                        aria-hidden="true"
+                      ></span>
+                      <div>
+                        <strong>{{ group.title }}</strong>
+                        <span class="finding-meta">{{ group.ruleId }} · {{ group.count }} {{ group.count === 1 ? 'element' : 'elements' }}</span>
+                      </div>
+                    </div>
+
+                    <tui-icon class="finding-toggle-icon" icon="@tui.chevron-down" aria-hidden="true" />
+                  </button>
+
+                  @if (isViolationGroupExpanded(group.id)) {
+                    <div class="finding-content" [id]="'violation-panel-' + group.id">
+                      <div class="finding-body">
+                        @if (group.description) {
+                          <div class="finding-detail">
+                            <span class="finding-detail-label">What it checks</span>
+                            <p>{{ group.description }}</p>
+                          </div>
+                        }
+
+                        @if (group.fix) {
+                          <div class="finding-detail finding-detail--fix">
+                            <span class="finding-detail-label">Fix</span>
+                            <p>
+                              @for (segment of group.fix.segments; track $index) {
+                                @if (segment.kind === 'chip') {
+                                  <span tuiChip appearance="outline-grayscale" size="xxs" class="fix-inline-chip">
+                                    {{ segment.text }}
+                                  </span>
+                                } @else {
+                                  {{ segment.text }}
+                                }
+                              }
+                            </p>
+                          </div>
+                        }
+
+                        @if (group.helpUrl) {
+                          <div class="finding-actions">
+                            <a class="finding-link" tuiLink [href]="group.helpUrl" target="_blank" rel="noreferrer">Open axe rule guide</a>
+                          </div>
+                        }
+                      </div>
+
+                      <tui-accordion class="selector-accordion" size="s" [closeOthers]="false">
+                        <button [tuiAccordion]="state.isFocusedGroup(group)">
+                          {{ group.selectors.length }} selector{{ group.selectors.length === 1 ? '' : 's' }}
+                        </button>
+
+                        <tui-expand>
+                          <ul class="selector-list">
+                            @for (selector of group.selectors; track selector) {
+                              <li>{{ selector }}</li>
+                            }
+                          </ul>
+                        </tui-expand>
+                      </tui-accordion>
+                    </div>
+                  }
+                </li>
+              }
+            </ul>
+          } @else {
+            <p class="empty-state">No findings yet</p>
+          }
+        }
+
+        @case ('structure') {
+          @if (state.hasStructure()) {
+            <div class="structure-grid">
+              <section class="surface structure-section">
+                <h2>Headings</h2>
+
+                <ul class="summary-list">
+                  @for (heading of state.headings(); track heading.selector) {
+                    <li>
+                      <strong>H{{ heading.level }}</strong>
+                      <span>{{ heading.text || heading.selector }}</span>
+                    </li>
+                  }
+                </ul>
+              </section>
+
+              <section class="surface structure-section">
+                <h2>Landmarks</h2>
+
+                <ul class="summary-list">
+                  @for (landmark of state.landmarks(); track landmark.selector) {
+                    <li>
+                      <strong>{{ landmark.role }}</strong>
+                      <span>{{ landmark.label || landmark.selector }}</span>
+                    </li>
+                  }
+                </ul>
+              </section>
+            </div>
+          } @else {
+            <p class="empty-state">No structure data yet</p>
+          }
+        }
+
+        @case ('report') {
+          @if (state.pageReport(); as report) {
+            <div class="surface report-panel">
+              <div class="report-header">
+                <div>
+                  <span class="eyebrow">QA report</span>
+                  <h2>{{ report.pageTitle }}</h2>
+                  <span class="report-context">{{ report.pageUrl }}</span>
+                </div>
+
+                <button class="report-copy" size="s" tuiButton type="button" aria-label="Copy report" (click)="copyReport()">
+                  <tui-icon icon="@tui.copy" />
+                </button>
+              </div>
+
+              <section class="report-overview" aria-label="Report summary">
+                <span class="report-overview-item report-overview-item--critical">
+                  <strong>{{ state.reportSeverityCounts().critical }}</strong>
+                  <span>Critical</span>
+                </span>
+                <span class="report-overview-item report-overview-item--warning">
+                  <strong>{{ state.reportSeverityCounts().warning }}</strong>
+                  <span>Warning</span>
+                </span>
+                <span class="report-overview-item report-overview-item--info">
+                  <strong>{{ state.reportSeverityCounts().info }}</strong>
+                  <span>Info</span>
+                </span>
+              </section>
+
+              <section class="report-section">
+                <div class="report-section-header">
+                  <h2>Priority findings</h2>
+                  <span>{{ state.topViolationGroups().length }} shown</span>
+                </div>
+
+                @if (state.violationGroups().length) {
+                  <ul class="report-findings">
+                    @for (group of state.topViolationGroups(); track group.id) {
+                      <li class="report-finding" [class.critical]="group.severity === 'critical'" [class.warning]="group.severity === 'warning'" [class.info]="group.severity === 'info'">
+                        <span
+                          class="severity-dot"
+                          [class.critical]="group.severity === 'critical'"
+                          [class.warning]="group.severity === 'warning'"
+                          [class.info]="group.severity === 'info'"
+                          aria-hidden="true"
+                        ></span>
+                        <div>
+                          <strong>{{ group.summary }}</strong>
+                          <span>{{ group.ruleId }} · {{ group.severity }}</span>
+                        </div>
+                        <span class="report-finding-count">{{ group.count }}</span>
+                      </li>
+                    }
+                  </ul>
+                } @else {
+                  <p class="report-note">No violations found for this audit scope.</p>
+                }
+              </section>
+
+              <details class="markdown-details">
+                <summary>
+                  <span>Markdown source</span>
+                  <tui-icon class="markdown-toggle-icon" icon="@tui.chevron-down" aria-hidden="true" />
+                </summary>
+                <textarea readonly [value]="state.reportMarkdown()" aria-label="Generated Markdown report"></textarea>
+              </details>
+            </div>
+          } @else {
+            <p class="empty-state">No report yet</p>
+          }
+        }
+      }
+    </section>
+    </tui-loader>
+  </main>
+
+  <ng-container ngProjectAs="tuiOverContent" />
+</tui-root>

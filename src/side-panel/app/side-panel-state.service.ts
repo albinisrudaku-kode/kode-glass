@@ -1,0 +1,634 @@
+import {computed, Injectable, signal} from '@angular/core';
+import type {
+  AccessibilityReport,
+  AccessibleNodeSummary,
+  AuditSettings,
+  AuditStandard,
+  KodeGlassViolation,
+  LayerName,
+  LayerVisibility,
+  ReaderModeSettings,
+  ViolationSeverity,
+} from '../../shared/accessibility-report';
+import {RuntimeMessageType, type RuntimeMessage, type ViolationSelectedPayload} from '../../shared/messages';
+
+export interface ViolationGroup {
+  readonly count: number;
+  readonly description?: string;
+  readonly fix?: ViolationFix;
+  readonly guidance?: string;
+  readonly helpUrl?: string;
+  readonly id: string;
+  readonly ruleId: string;
+  readonly selectors: readonly string[];
+  readonly severity: ViolationSeverity;
+  readonly summary: string;
+  readonly title: string;
+  readonly violationIds: readonly string[];
+}
+
+export interface ViolationFix {
+  readonly segments: readonly ViolationFixSegment[];
+  readonly text: string;
+}
+
+export interface ViolationFixSegment {
+  readonly kind: 'chip' | 'text';
+  readonly text: string;
+}
+
+export interface ReaderVoiceOption {
+  readonly label: string;
+  readonly lang: string;
+  readonly localService: boolean;
+  readonly voiceURI: string;
+}
+
+export type PreviewMode = 'off' | 'reader' | 'inspect';
+
+const initialLayerVisibility: LayerVisibility = {
+  errors: true,
+  focusPath: false,
+  landmarks: false,
+  pageOverlay: true,
+};
+
+const initialAuditSettings: AuditSettings = {
+  standard: 'wcag2aa',
+};
+
+const initialReaderMode: ReaderModeSettings = {
+  enabled: false,
+  inspectWithMouse: false,
+  rate: 0.92,
+  speak: false,
+};
+
+@Injectable({providedIn: 'root'})
+export class SidePanelStateService {
+  private connected = false;
+  private sessionTabId: number | undefined;
+  private analysisLoadingTimeout: ReturnType<typeof setTimeout> | undefined;
+  private readonly activeNodeSignal = signal<AccessibleNodeSummary | null>(null);
+  private readonly analysisLoadingSignal = signal(false);
+  private readonly auditSettingsSignal = signal<AuditSettings>(initialAuditSettings);
+  private readonly layerVisibilitySignal = signal<LayerVisibility>(initialLayerVisibility);
+  private readonly pageReportSignal = signal<AccessibilityReport | null>(null);
+  private readonly pageTitleSignal = signal('Waiting for a page');
+  private readonly pageUrlSignal = signal('');
+  private readonly readerModeSignal = signal<ReaderModeSettings>(initialReaderMode);
+  private readonly selectedViolationSignal = signal<ViolationSelectedPayload | null>(null);
+  private readonly voiceOptionsSignal = signal<readonly ReaderVoiceOption[]>([]);
+  private readonly violationsSignal = signal<readonly AccessibilityReport['violations'][number][]>([]);
+
+  readonly activeNode = this.activeNodeSignal.asReadonly();
+  readonly analysisLoading = this.analysisLoadingSignal.asReadonly();
+  readonly auditSettings = this.auditSettingsSignal.asReadonly();
+  readonly layerVisibility = this.layerVisibilitySignal.asReadonly();
+  readonly pageReport = this.pageReportSignal.asReadonly();
+  readonly pageTitle = this.pageTitleSignal.asReadonly();
+  readonly pageUrl = this.pageUrlSignal.asReadonly();
+  readonly readerMode = this.readerModeSignal.asReadonly();
+  readonly selectedViolation = this.selectedViolationSignal.asReadonly();
+  readonly voiceOptions = this.voiceOptionsSignal.asReadonly();
+  readonly violations = this.violationsSignal.asReadonly();
+  readonly headings = computed(() => this.pageReport()?.headings ?? []);
+  readonly landmarks = computed(() => this.pageReport()?.landmarks ?? []);
+  readonly visibleViolations = computed(() => this.createVisibleViolations());
+  readonly hasViolations = computed(() => this.violations().length > 0);
+  readonly hasStructure = computed(() => this.headings().length > 0 || this.landmarks().length > 0);
+  readonly reportSeverityCounts = computed(() => this.createSeverityCounts(this.violations()));
+  readonly severityCounts = computed(() => this.createSeverityCounts());
+  readonly totalHeadings = computed(() => this.headings().length);
+  readonly totalLandmarks = computed(() => this.landmarks().length);
+  readonly totalViolations = computed(() => this.violations().length);
+  readonly violationGroups = computed(() => this.createViolationGroups(this.violations()));
+  readonly topViolationGroups = computed(() => this.violationGroups().slice(0, 6));
+  readonly visibleViolationGroups = computed(() => this.createViolationGroups());
+  readonly reportMarkdown = computed(() => this.createReportMarkdown());
+
+  connectRuntime(): void {
+    if (this.connected || !chrome.runtime?.id) {
+      return;
+    }
+
+    chrome.runtime.onMessage.addListener(this.handleRuntimeMessage);
+    void this.captureSessionTab();
+    this.loadVoiceOptions();
+    this.connected = true;
+  }
+
+  requestAnalysis(): void {
+    this.clearSelectedViolation();
+    this.startAnalysisLoading();
+    this.sendRuntimeMessage({payload: this.auditSettings(), type: RuntimeMessageType.AnalysisRequested});
+  }
+
+  resetAnalysis(): void {
+    this.finishAnalysisLoading();
+    this.activeNodeSignal.set(null);
+    this.pageReportSignal.set(null);
+    this.selectedViolationSignal.set(null);
+    this.violationsSignal.set([]);
+    this.layerVisibilitySignal.set(initialLayerVisibility);
+    this.sendRuntimeMessage({payload: {}, type: RuntimeMessageType.ResetRequested});
+  }
+
+  closePanelSession(): void {
+    this.sendRuntimeMessage({payload: {}, type: RuntimeMessageType.ResetRequested});
+    window.speechSynthesis?.cancel();
+  }
+
+  setAuditStandard(standard: AuditStandard): void {
+    if (this.auditSettings().standard === standard) {
+      return;
+    }
+
+    this.auditSettingsSignal.set({standard});
+
+    if (this.pageUrl()) {
+      this.requestAnalysis();
+    }
+  }
+
+  clearSelectedViolation(): void {
+    this.selectedViolationSignal.set(null);
+  }
+
+  isFocusedGroup(group: ViolationGroup): boolean {
+    const selectedViolation = this.selectedViolation();
+
+    if (!selectedViolation) {
+      return false;
+    }
+
+    return group.violationIds.includes(selectedViolation.violationId) || group.selectors.includes(selectedViolation.selector);
+  }
+
+  toggleReaderMode(): void {
+    this.setReaderModeEnabled(!this.readerMode().enabled);
+  }
+
+  setReaderModeEnabled(enabled: boolean): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      enabled,
+      inspectWithMouse: enabled ? false : readerMode.inspectWithMouse,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: enabled ? readerMode.speak : false,
+      voiceURI: readerMode.voiceURI,
+    });
+  }
+
+  toggleMouseInspection(): void {
+    this.setMouseInspection(!this.readerMode().inspectWithMouse);
+  }
+
+  setPreviewMode(mode: PreviewMode): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      enabled: mode === 'reader',
+      inspectWithMouse: mode === 'inspect',
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: mode === 'reader' ? readerMode.speak : false,
+      voiceURI: readerMode.voiceURI,
+    });
+  }
+
+  setMouseInspection(inspectWithMouse: boolean): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      enabled: inspectWithMouse ? false : readerMode.enabled,
+      inspectWithMouse,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: inspectWithMouse ? false : readerMode.speak,
+      voiceURI: readerMode.voiceURI,
+    });
+  }
+
+  toggleReaderSpeech(): void {
+    this.setReaderSpeech(!this.readerMode().speak);
+  }
+
+  setReaderSpeech(speak: boolean): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      enabled: readerMode.enabled || speak,
+      inspectWithMouse: readerMode.inspectWithMouse,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak,
+      voiceURI: readerMode.voiceURI,
+    });
+  }
+
+  setReaderVoice(voiceURI: string): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      enabled: readerMode.enabled,
+      inspectWithMouse: readerMode.inspectWithMouse,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
+      voiceURI: voiceURI || undefined,
+    });
+  }
+
+  setReaderRate(rate: number): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      enabled: readerMode.enabled,
+      inspectWithMouse: readerMode.inspectWithMouse,
+      rate,
+      speak: readerMode.speak,
+      voiceURI: readerMode.voiceURI,
+    });
+  }
+
+  toggleLayer(layerName: LayerName): void {
+    const nextLayerVisibility = {
+      ...this.layerVisibility(),
+      [layerName]: !this.layerVisibility()[layerName],
+    };
+
+    this.setLayerVisibility(nextLayerVisibility);
+  }
+
+  setLayerVisibility(layerVisibility: LayerVisibility): void {
+    this.layerVisibilitySignal.set({
+      ...layerVisibility,
+    });
+
+    this.sendRuntimeMessage({
+      payload: this.layerVisibility(),
+      type: RuntimeMessageType.LayerVisibilityChanged,
+    });
+  }
+
+  togglePageOverlay(): void {
+    this.toggleLayer('pageOverlay');
+  }
+
+  private readonly handleRuntimeMessage = (message: RuntimeMessage): false => {
+    if (message.tabId !== undefined && this.sessionTabId !== undefined && message.tabId !== this.sessionTabId) {
+      return false;
+    }
+
+    switch (message.type) {
+      case RuntimeMessageType.ActiveNodeChanged:
+        this.activeNodeSignal.set(message.payload);
+        break;
+      case RuntimeMessageType.AnalysisFailed:
+        this.finishAnalysisLoading();
+        break;
+      case RuntimeMessageType.ContentReady:
+        this.pageTitleSignal.set(message.payload.title || 'Untitled page');
+        this.pageUrlSignal.set(message.payload.url);
+        break;
+      case RuntimeMessageType.ReportGenerated:
+        if (message.payload.auditSettings.standard !== this.auditSettings().standard) {
+          break;
+        }
+
+        this.finishAnalysisLoading();
+        this.pageReportSignal.set(message.payload);
+        this.violationsSignal.set(message.payload.violations);
+        break;
+      case RuntimeMessageType.ResetCompleted:
+        this.finishAnalysisLoading();
+        this.activeNodeSignal.set(null);
+        break;
+      case RuntimeMessageType.ViolationSelected:
+        this.selectedViolationSignal.set(message.payload);
+        break;
+    }
+
+    return false;
+  };
+
+  private sendRuntimeMessage(message: RuntimeMessage): void {
+    if (!chrome.runtime?.id) {
+      return;
+    }
+
+    void this.sendScopedRuntimeMessage(message);
+  }
+
+  private commitReaderMode(readerMode: ReaderModeSettings): void {
+    this.readerModeSignal.set(readerMode);
+    this.sendRuntimeMessage({payload: readerMode, type: RuntimeMessageType.ReaderModeChanged});
+  }
+
+  private startAnalysisLoading(): void {
+    clearTimeout(this.analysisLoadingTimeout);
+    this.analysisLoadingSignal.set(true);
+    this.analysisLoadingTimeout = setTimeout(() => this.analysisLoadingSignal.set(false), 30_000);
+  }
+
+  private finishAnalysisLoading(): void {
+    clearTimeout(this.analysisLoadingTimeout);
+    this.analysisLoadingTimeout = undefined;
+    this.analysisLoadingSignal.set(false);
+  }
+
+  private async sendScopedRuntimeMessage(message: RuntimeMessage): Promise<void> {
+    const tabId = await this.getSessionTabId();
+
+    await chrome.runtime.sendMessage({...message, tabId}).catch(() => undefined);
+  }
+
+  private async getSessionTabId(): Promise<number | undefined> {
+    if (this.sessionTabId !== undefined) {
+      return this.sessionTabId;
+    }
+
+    await this.captureSessionTab();
+
+    return this.sessionTabId;
+  }
+
+  private async captureSessionTab(): Promise<void> {
+    const [activeTab] = await chrome.tabs.query({active: true, currentWindow: true}).catch(() => []);
+
+    if (activeTab?.id !== undefined) {
+      this.sessionTabId = activeTab.id;
+    }
+  }
+
+  private loadVoiceOptions(): void {
+    if (!window.speechSynthesis) {
+      return;
+    }
+
+    const updateVoices = (): void => {
+      const voices = window.speechSynthesis.getVoices()
+        .map(voice => ({
+          label: `${voice.name} (${voice.lang})`,
+          lang: voice.lang,
+          localService: voice.localService,
+          voiceURI: voice.voiceURI,
+        }))
+        .sort((first, second) => Number(second.localService) - Number(first.localService) || first.label.localeCompare(second.label));
+
+      this.voiceOptionsSignal.set(voices);
+
+      if (!this.readerMode().voiceURI) {
+        this.readerModeSignal.update((readerMode): ReaderModeSettings => ({
+          ...readerMode,
+          voiceURI: voices.find(voice => /natural|online|zira|aria|jenny|guy|susan|samantha/i.test(voice.label))?.voiceURI ?? voices[0]?.voiceURI,
+        }));
+      }
+    };
+
+    updateVoices();
+    window.speechSynthesis.onvoiceschanged = updateVoices;
+  }
+
+  private createReportMarkdown(): string {
+    const report = this.pageReport();
+
+    if (!report) {
+      return '';
+    }
+
+    const violations = report.violations.map((violation, index) => [
+      `${index + 1}. ${getReadableSummary(violation)}`,
+      `   - Rule: ${violation.ruleId}`,
+      `   - Severity: ${violation.severity}`,
+      `   - Selector: ${violation.selector}`,
+      violation.description ? `   - Detail: ${violation.description}` : '',
+      violation.guidance ? `   - Guidance: ${getReadableGuidance(violation.guidance)}` : '',
+      violation.helpUrl ? `   - Help: ${violation.helpUrl}` : '',
+    ].filter(Boolean).join('\n'));
+
+    const headings = report.headings.map(heading => `- H${heading.level}: ${heading.text || heading.selector}`);
+    const landmarks = report.landmarks.map(landmark => `- ${landmark.role}${landmark.label ? `: ${landmark.label}` : ''}`);
+
+    return [
+      `# Accessibility Report: ${report.pageTitle}`,
+      '',
+      `URL: ${report.pageUrl}`,
+      `Audit: ${formatAuditStandard(report.auditSettings.standard)}`,
+      `Generated: ${new Date(report.generatedAt).toISOString()}`,
+      '',
+      `## Violations (${report.violations.length})`,
+      '',
+      violations.join('\n\n') || 'No violations found.',
+      '',
+      `## Headings (${report.headings.length})`,
+      '',
+      headings.join('\n') || 'No headings found.',
+      '',
+      `## Landmarks (${report.landmarks.length})`,
+      '',
+      landmarks.join('\n') || 'No landmarks found.',
+    ].join('\n');
+  }
+
+  private createSeverityCounts(violations: readonly KodeGlassViolation[] = this.visibleViolations()): Record<ViolationSeverity, number> {
+    return violations.reduce<Record<ViolationSeverity, number>>((counts, violation) => ({
+      ...counts,
+      [violation.severity]: counts[violation.severity] + 1,
+    }), {critical: 0, info: 0, warning: 0});
+  }
+
+  private createViolationGroups(violations: readonly KodeGlassViolation[] = this.visibleViolations()): readonly ViolationGroup[] {
+    const groups = violations.reduce((groupMap, violation) => {
+      const title = getReadableSummary(violation);
+      const id = violation.ruleId;
+      const group = groupMap.get(id);
+
+      groupMap.set(id, {
+        count: (group?.count ?? 0) + 1,
+        description: group?.description ?? violation.description,
+        fix: group?.fix ?? createViolationFix(violation),
+        guidance: group?.guidance ?? (violation.guidance ? getReadableGuidance(violation.guidance) : undefined),
+        helpUrl: group?.helpUrl ?? violation.helpUrl,
+        id,
+        ruleId: violation.ruleId,
+        selectors: [...new Set([...(group?.selectors ?? []), violation.selector])].slice(0, 5),
+        severity: getHighestSeverity(group?.severity, violation.severity),
+        summary: title,
+        title,
+        violationIds: [...new Set([...(group?.violationIds ?? []), violation.id])],
+      });
+
+      return groupMap;
+    }, new Map<string, ViolationGroup>());
+
+    return [...groups.values()].sort((first, second) => {
+      const severityDelta = getSeverityRank(second.severity) - getSeverityRank(first.severity);
+
+      return severityDelta || second.count - first.count || first.ruleId.localeCompare(second.ruleId);
+    });
+  }
+
+  private createVisibleViolations(): readonly KodeGlassViolation[] {
+    const selectedViolation = this.selectedViolation();
+
+    if (!selectedViolation) {
+      return this.violations();
+    }
+
+    return this.violations().filter(violation =>
+      violation.id === selectedViolation.violationId || violation.selector === selectedViolation.selector,
+    );
+  }
+}
+
+function formatAuditStandard(standard: AuditStandard): string {
+  return ({
+    'best-practice': 'Best practices',
+    wcag2a: 'WCAG A',
+    wcag2aa: 'WCAG AA',
+    wcag2aaa: 'WCAG AAA',
+  } as Record<AuditStandard, string>)[standard];
+}
+
+function getReadableSummary(violation: KodeGlassViolation): string {
+  const summary = (violation.title ?? violation.summary).replace(/\s+/g, ' ').replace(/^Fix any of the following:\s*/i, '').trim();
+
+  if (violation.ruleId === 'color-contrast') {
+    return 'Text contrast is too low';
+  }
+
+  if (violation.ruleId === 'image-alt') {
+    return 'Image is missing alternate text';
+  }
+
+  if (violation.ruleId === 'link-name') {
+    return 'Link has no accessible name';
+  }
+
+  if (violation.ruleId === 'target-size') {
+    return 'Tap target is too small';
+  }
+
+  if (summary.length <= 72) {
+    return summary;
+  }
+
+  return `${summary.slice(0, 69).trim()}...`;
+}
+
+function getReadableGuidance(guidance: string): string {
+  return guidance
+    .replace(/\s+/g, ' ')
+    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
+    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
+    .trim();
+}
+
+function createViolationFix(violation: KodeGlassViolation): ViolationFix | undefined {
+  if (!violation.guidance) {
+    return undefined;
+  }
+
+  const guidance = getReadableGuidance(violation.guidance);
+
+  if (!guidance) {
+    return undefined;
+  }
+
+  return {
+    segments: createInlineFixSegments(guidance),
+    text: guidance,
+  };
+}
+
+interface InlineChipRange {
+  readonly end: number;
+  readonly start: number;
+  readonly text: string;
+}
+
+function createInlineFixSegments(guidance: string): readonly ViolationFixSegment[] {
+  const ranges = [
+    ...findCaptureRanges(guidance, /contrast of ([\d.]+)/gi),
+    ...findWholeMatchRanges(guidance, /foreground color: [^,]+/gi),
+    ...findWholeMatchRanges(guidance, /background color: [^,]+/gi),
+    ...findWholeMatchRanges(guidance, /font size: [^,]+/gi),
+    ...findWholeMatchRanges(guidance, /font weight: [^)]+/gi),
+    ...findCaptureRanges(guidance, /Expected contrast ratio of ([\d.:]+)/gi),
+    ...findWholeMatchRanges(guidance, /\d+(?:\.\d+)?\s*px(?:\s+by\s+\d+(?:\.\d+)?\s*px)?/gi),
+    ...findWholeMatchRanges(guidance, /\b(?:aria-[\w-]+|alt|title|href|tabindex)\b/g),
+    ...findWholeMatchRanges(guidance, /role="[^"]+"/g),
+  ]
+    .sort((first, second) => first.start - second.start)
+    .filter((range, index, sortedRanges) => {
+      const previousRange = sortedRanges[index - 1];
+
+      return !previousRange || range.start >= previousRange.end;
+    });
+
+  if (!ranges.length) {
+    return [{kind: 'text', text: guidance}];
+  }
+
+  const segments: ViolationFixSegment[] = [];
+  let cursor = 0;
+
+  for (const range of ranges) {
+    if (range.start > cursor) {
+      segments.push({kind: 'text', text: guidance.slice(cursor, range.start)});
+    }
+
+    segments.push({kind: 'chip', text: range.text});
+    cursor = range.end;
+  }
+
+  if (cursor < guidance.length) {
+    segments.push({kind: 'text', text: guidance.slice(cursor)});
+  }
+
+  return segments;
+}
+
+function findCaptureRanges(text: string, pattern: RegExp): readonly InlineChipRange[] {
+  return [...text.matchAll(pattern)].flatMap(match => {
+    const capture = match[1];
+
+    if (!capture || match.index === undefined) {
+      return [];
+    }
+
+    const matchStart = match.index;
+    const captureStartInMatch = match[0].indexOf(capture);
+
+    if (captureStartInMatch < 0) {
+      return [];
+    }
+
+    const trimmedCapture = capture.trim();
+    const leadingSpace = capture.length - capture.trimStart().length;
+    const start = matchStart + captureStartInMatch + leadingSpace;
+
+    return [{start, end: start + trimmedCapture.length, text: trimmedCapture}];
+  });
+}
+
+function findWholeMatchRanges(text: string, pattern: RegExp): readonly InlineChipRange[] {
+  return [...text.matchAll(pattern)].flatMap(match => {
+    if (!match[0] || match.index === undefined) {
+      return [];
+    }
+
+    return [{start: match.index, end: match.index + match[0].length, text: match[0]}];
+  });
+}
+
+function getHighestSeverity(current: ViolationSeverity | undefined, next: ViolationSeverity): ViolationSeverity {
+  if (!current) {
+    return next;
+  }
+
+  return getSeverityRank(next) > getSeverityRank(current) ? next : current;
+}
+
+function getSeverityRank(severity: ViolationSeverity): number {
+  return ({critical: 3, warning: 2, info: 1} as Record<ViolationSeverity, number>)[severity];
+}
