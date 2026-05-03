@@ -284,8 +284,8 @@
                           [class.info]="group.severity === 'info'"
                           aria-hidden="true"
                         ></span>
-                        <div>
-                          <strong>{{ group.title }}</strong>
+                        <div class="finding-copy">
+                          <strong class="finding-title">{{ group.title }}</strong>
                           <span class="finding-meta">{{ group.engineLabel }} · {{ group.ruleId }} · {{ group.count }} {{ group.count === 1 ? 'element' : 'elements' }}</span>
                         </div>
                       </div>

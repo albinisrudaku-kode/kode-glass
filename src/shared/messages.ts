@@ -20,6 +20,7 @@ export const enum RuntimeMessageType {
   ReportGenerated = 'report.generated',
   ResetRequested = 'analysis.reset-requested',
   ResetCompleted = 'analysis.reset-completed',
+  TabReloaded = 'tab.reloaded',
   ViolationFiltersChanged = 'violation-filters.changed',
   ViolationSelected = 'violation.selected'
 }
@@ -98,6 +99,11 @@ export type ResetCompletedMessage = MessageEnvelope<
   Record<string, never>
 >;
 
+export type TabReloadedMessage = MessageEnvelope<
+  RuntimeMessageType.TabReloaded,
+  Record<string, never>
+>;
+
 export interface ViolationSelectedPayload {
   readonly selector: string;
   readonly violationId: string;
@@ -131,5 +137,6 @@ export type RuntimeMessage =
   | ReportGeneratedMessage
   | ResetCompletedMessage
   | ResetRequestedMessage
+  | TabReloadedMessage
   | ViolationFiltersChangedMessage
   | ViolationSelectedMessage;

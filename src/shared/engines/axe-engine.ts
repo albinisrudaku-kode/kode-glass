@@ -20,33 +20,19 @@ export async function analyzeCurrentPage(auditSettings: AuditSettings): Promise<
 }
 
 export async function analyzeWithAxe(auditSettings: AuditSettings): Promise<readonly KodeGlassViolation[]> {
-  const results = await runAxeWithoutPreloadNoise(auditSettings);
+  const results = await runAxe(auditSettings);
 
   return normalizeAxeViolations(results.violations);
 }
 
-async function runAxeWithoutPreloadNoise(auditSettings: AuditSettings): Promise<axe.AxeResults> {
-  const originalWarn = console.warn;
-
-  console.warn = (...args: unknown[]): void => {
-    if (typeof args[0] === 'string' && args[0].includes('Couldn\'t load preload assets')) {
-      return;
-    }
-
-    originalWarn.apply(console, args as Parameters<typeof console.warn>);
-  };
-
-  try {
-    return await axe.run(document, {
+async function runAxe(auditSettings: AuditSettings): Promise<axe.AxeResults> {
+  return axe.run(document, {
     resultTypes: ['violations'],
     runOnly: {
       type: 'tag',
       values: getAxeTags(auditSettings.standard),
     },
   });
-  } finally {
-    console.warn = originalWarn;
-  }
 }
 
 function getAxeTags(standard: AuditStandard): string[] {

@@ -27,7 +27,7 @@ export function collectHeadings(root: ParentNode = document): readonly HeadingSu
 export function collectLandmarks(root: ParentNode = document): readonly LandmarkSummary[] {
   return Array.from(root.querySelectorAll<HTMLElement>(landmarkSelectors.join(','))).map(element => ({
     bounds: getElementBounds(element),
-    label: element.getAttribute('aria-label') ?? element.getAttribute('aria-labelledby') ?? '',
+    label: getLandmarkLabel(element),
     role: getLandmarkRole(element),
     selector: getElementSelector(element),
   }));
@@ -82,6 +82,28 @@ function getLandmarkRole(element: HTMLElement): string {
       nav: 'navigation',
     } as const
   )[tagName] ?? 'region';
+}
+
+function getLandmarkLabel(element: HTMLElement): string {
+  const ariaLabel = element.getAttribute('aria-label')?.trim();
+
+  if (ariaLabel) {
+    return ariaLabel;
+  }
+
+  const labelledBy = element.getAttribute('aria-labelledby');
+
+  if (!labelledBy) {
+    return '';
+  }
+
+  const ownerDocument = element.ownerDocument ?? document;
+
+  return labelledBy
+    .split(/\s+/)
+    .map(id => ownerDocument.getElementById(id)?.textContent?.trim() ?? '')
+    .filter(Boolean)
+    .join(' ');
 }
 
 function getSelectorPart(element: Element): string {

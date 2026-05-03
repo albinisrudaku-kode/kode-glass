@@ -21,34 +21,26 @@ function initializeContentScript(): void {
   const pageOverlay = new PageOverlay();
 
   pageOverlay.onActiveNodeChanged(activeNode => {
-    if (!chrome.runtime?.id) {
-      return;
-    }
-
-    void chrome.runtime.sendMessage({
+    void dispatchRuntimeMessage({
       payload: activeNode,
       type: RuntimeMessageType.ActiveNodeChanged,
     });
   });
 
   pageOverlay.onViolationSelected(payload => {
-    if (!chrome.runtime?.id) {
-      return;
-    }
-
-    void chrome.runtime.sendMessage({
+    void dispatchRuntimeMessage({
       payload,
       type: RuntimeMessageType.ViolationSelected,
     });
   });
 
-  if (chrome.runtime?.id) {
-    void chrome.runtime.sendMessage(createContentReadyMessage());
-  }
+  void sendContentReadyMessage();
 
   chrome.runtime.onMessage.addListener((message: RuntimeMessage) => {
     if (message.type === RuntimeMessageType.PageContextRequested) {
-      void chrome.runtime.sendMessage(createContentReadyMessage()).catch(() => undefined);
+      void sendContentReadyMessage().catch(error => {
+        sendAnalysisFailure(new Error(`Failed to sync page context: ${getErrorMessage(error)}`));
+      });
     }
 
     if (message.type === RuntimeMessageType.AnalysisRequested) {
@@ -70,7 +62,7 @@ function initializeContentScript(): void {
     if (message.type === RuntimeMessageType.ResetRequested) {
       pageOverlay.reset();
 
-      void chrome.runtime.sendMessage({
+      void dispatchRuntimeMessage({
         payload: {},
         type: RuntimeMessageType.ResetCompleted,
       });
@@ -81,13 +73,13 @@ function initializeContentScript(): void {
 }
 
 async function runAnalysis(pageOverlay: PageOverlay, auditSettings: AuditSettings): Promise<void> {
-  await chrome.runtime.sendMessage(createContentReadyMessage());
+  await sendContentReadyMessage();
 
   const report = await getAnalyzeCurrentPage()(auditSettings);
 
   pageOverlay.setReport(report);
 
-  await chrome.runtime.sendMessage({
+  await dispatchRuntimeMessage({
     payload: report,
     type: RuntimeMessageType.ReportGenerated,
   });
@@ -114,10 +106,26 @@ function getAnalyzeCurrentPage(): AnalyzeCurrentPage {
 }
 
 function sendAnalysisFailure(error: unknown): void {
-  void chrome.runtime.sendMessage({
+  void dispatchRuntimeMessage({
     payload: {
       message: error instanceof Error ? error.message : String(error),
     },
     type: RuntimeMessageType.AnalysisFailed,
-  }).catch(() => undefined);
+  });
+}
+
+async function sendContentReadyMessage(): Promise<void> {
+  await dispatchRuntimeMessage(createContentReadyMessage());
+}
+
+async function dispatchRuntimeMessage(message: RuntimeMessage): Promise<void> {
+  if (!chrome.runtime?.id) {
+    throw new Error('Extension runtime is unavailable.');
+  }
+
+  await chrome.runtime.sendMessage(message);
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

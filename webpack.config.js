@@ -7,6 +7,7 @@ const {AngularWebpackPlugin} = require('@ngtools/webpack');
 module.exports = (env, argv) => {
   const isProduction = argv.mode === 'production';
   const extensionBundleBudget = 1.5 * 1024 * 1024;
+  const taigaIcons = ['sun.svg', 'moon.svg', 'rotate-ccw.svg', 'chevron-down.svg', 'copy.svg'];
 
   return {
     mode: isProduction ? 'production' : 'development',
@@ -86,11 +87,11 @@ module.exports = (env, argv) => {
       new CopyPlugin({
         patterns: [
           {from: 'public', to: '.'},
-          {
-            from: 'node_modules/@taiga-ui/icons/src',
+          ...taigaIcons.map(icon => ({
+            from: `node_modules/@taiga-ui/icons/src/${icon}`,
             noErrorOnMissing: true,
-            to: 'assets/taiga-ui/icons'
-          }
+            to: `assets/taiga-ui/icons/${icon}`
+          }))
         ]
       })
     ]

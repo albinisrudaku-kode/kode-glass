@@ -23,7 +23,7 @@ chrome.action.onClicked.addListener(tab => {
   activeTabId = tab.id;
   void enableSidePanelForTab(tab.id);
   void ensureContentScript(tab.id);
-  void chrome.sidePanel.open({tabId: tab.id}).catch(() => undefined);
+  void chrome.sidePanel.open({tabId: tab.id});
 });
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
@@ -53,7 +53,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
     return false;
   }
 
-  void chrome.runtime.sendMessage(messageForPanel).catch(() => undefined);
+  void sendRuntimeMessage(messageForPanel);
 
   return false;
 });
@@ -79,11 +79,11 @@ chrome.runtime.onConnect.addListener(port => {
     }
 
     latestMessagesByTab.delete(connectedTabId);
-    void chrome.tabs.sendMessage(connectedTabId, {
+    void sendTabMessage(connectedTabId, {
       payload: {},
       tabId: connectedTabId,
       type: RuntimeMessageType.ResetRequested,
-    }).catch(() => undefined);
+    });
   });
 });
 
@@ -92,9 +92,20 @@ chrome.tabs.onActivated.addListener(({tabId}) => {
   void activateSidePanelTab(tabId);
 });
 
-chrome.tabs.onUpdated.addListener((tabId) => {
-  analyzerInjectedTabs.delete(tabId);
-  latestMessagesByTab.delete(tabId);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (isMeaningfulNavigationUpdate(changeInfo)) {
+    analyzerInjectedTabs.delete(tabId);
+    latestMessagesByTab.delete(tabId);
+  }
+
+  if (changeInfo.status === 'loading' || changeInfo.url !== undefined) {
+    void sendRuntimeMessage({
+      payload: {},
+      tabId,
+      type: RuntimeMessageType.TabReloaded,
+    });
+  }
+
   void enableSidePanelForTab(tabId);
 });
 
@@ -108,7 +119,11 @@ async function forwardToTargetTab(message: RuntimeMessage): Promise<void> {
       return;
     }
 
-    await chrome.tabs.sendMessage(message.tabId, message).catch(() => undefined);
+    const sent = await sendTabMessage(message.tabId, message);
+
+    if (!sent && message.type === RuntimeMessageType.AnalysisRequested) {
+      notifyPanelAnalysisFailure(message.tabId, 'Could not deliver the scan request to this page. Refresh the page, then run the scan again.');
+    }
 
     return;
   }
@@ -127,7 +142,11 @@ async function forwardToTargetTab(message: RuntimeMessage): Promise<void> {
     return;
   }
 
-  await chrome.tabs.sendMessage(activeTab.id, message).catch(() => undefined);
+  const sent = await sendTabMessage(activeTab.id, message);
+
+  if (!sent && message.type === RuntimeMessageType.AnalysisRequested) {
+    notifyPanelAnalysisFailure(activeTab.id, 'Could not deliver the scan request to this page. Refresh the page, then run the scan again.');
+  }
 }
 
 async function enableSidePanelForOpenTabs(): Promise<void> {
@@ -138,10 +157,10 @@ async function enableSidePanelForOpenTabs(): Promise<void> {
 
 async function activateSidePanelTab(tabId: number): Promise<void> {
   await enableSidePanelForTab(tabId);
-  await chrome.runtime.sendMessage({
+  await sendRuntimeMessage({
     payload: {tabId},
     type: RuntimeMessageType.ActiveTabChanged,
-  }).catch(() => undefined);
+  });
   await hydratePanelForTab(tabId);
 }
 
@@ -163,14 +182,14 @@ async function hydratePanelForTab(tabId: number | undefined): Promise<void> {
   const latestMessage = latestMessagesByTab.get(tabId);
 
   if (latestMessage) {
-    await chrome.runtime.sendMessage(latestMessage).catch(() => undefined);
+    await sendRuntimeMessage(latestMessage);
   }
 
-  await chrome.tabs.sendMessage(tabId, {
+  await sendTabMessage(tabId, {
     payload: {},
     tabId,
     type: RuntimeMessageType.PageContextRequested,
-  }).catch(() => undefined);
+  });
 }
 
 async function ensureContentScript(tabId: number): Promise<boolean> {
@@ -235,11 +254,35 @@ async function canReachContentScript(tabId: number): Promise<boolean> {
 }
 
 function notifyPanelAnalysisFailure(tabId: number, message: string): void {
-  void chrome.runtime.sendMessage({
+  void sendRuntimeMessage({
     payload: {message},
     tabId,
     type: RuntimeMessageType.AnalysisFailed,
-  }).catch(() => undefined);
+  });
+}
+
+function isMeaningfulNavigationUpdate(changeInfo: {readonly status?: string; readonly url?: string}): boolean {
+  return changeInfo.status === 'loading' || changeInfo.url !== undefined;
+}
+
+async function sendRuntimeMessage(message: RuntimeMessage): Promise<boolean> {
+  try {
+    await chrome.runtime.sendMessage(message);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function sendTabMessage(tabId: number, message: RuntimeMessage): Promise<boolean> {
+  try {
+    await chrome.tabs.sendMessage(tabId, message);
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function rememberLatestTabMessage(tabId: number, message: RuntimeMessage): void {

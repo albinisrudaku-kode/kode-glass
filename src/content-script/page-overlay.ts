@@ -48,6 +48,13 @@ const initialLayerVisibility: LayerVisibility = {
   pageOverlay: true,
 };
 
+const initialReaderMode: ReaderModeSettings = {
+  enabled: false,
+  inspectWithMouse: false,
+  rate: 0.92,
+  speak: false,
+};
+
 export class PageOverlay {
   private readonly host = document.createElement('kode-glass-overlay');
   private readonly shadowRoot = this.host.attachShadow({mode: 'open'});
@@ -62,40 +69,38 @@ export class PageOverlay {
   private latestMouseSummary: AccessibleNodeSummary | null = null;
   private latestSummary: AccessibleNodeSummary | null = null;
   private mutationObserver: MutationObserver | undefined;
+  private observingMutations = false;
   private violationFilters: ViolationFilterSettings = initialViolationFilterSettings;
-  private readerMode: ReaderModeSettings = {
-    enabled: false,
-    inspectWithMouse: false,
-    rate: 0.92,
-    speak: false,
-  };
+  private readerMode: ReaderModeSettings = initialReaderMode;
   private renderQueued = false;
+  private renderListenersAttached = false;
+  private focusListenerAttached = false;
+  private clickSelectionAttached = false;
+  private inspectListenerAttached = false;
+  private lastPointerSyncAt = 0;
   private activeNodeChanged: (activeNode: AccessibleNodeSummary | null) => void = () => undefined;
   private violationSelected: (payload: ViolationSelectedPayload) => void = () => undefined;
 
   constructor() {
     this.mount();
-    window.addEventListener('scroll', this.queueRender, {passive: true});
-    window.addEventListener('resize', this.queueRender);
-    document.addEventListener('focusin', this.captureFocus, true);
-    document.addEventListener('click', this.selectViolationFromPointer, true);
-    document.addEventListener('mousemove', this.showActiveNode, true);
-    this.mutationObserver = new MutationObserver(this.queueRender);
-    this.mutationObserver.observe(document.documentElement, {attributes: true, childList: true, subtree: true});
+    this.syncRuntimeSubscriptions();
   }
 
   setLayerVisibility(layerVisibility: LayerVisibility): void {
     this.layerVisibility = layerVisibility;
+    this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
   setReport(report: AccessibilityReport): void {
     this.latestReport = report;
+    this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
   setViolationFilters(violationFilters: ViolationFilterSettings): void {
     this.violationFilters = violationFilters;
+    this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
@@ -104,11 +109,14 @@ export class PageOverlay {
     this.focusPath = [];
     this.focusPathOrder = 0;
     this.layerVisibility = initialLayerVisibility;
+    this.readerMode = initialReaderMode;
     this.latestFocusedElement = null;
     this.latestMouseElement = null;
     this.latestMouseSummary = null;
     this.latestSummary = null;
     this.violationFilters = initialViolationFilterSettings;
+    this.stopMutationObserver();
+    this.syncRuntimeSubscriptions();
     this.svg.replaceChildren();
     this.hideActiveNode();
     window.speechSynthesis?.cancel();
@@ -133,6 +141,7 @@ export class PageOverlay {
       this.showReaderIdleSubtitle();
     }
 
+    this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
@@ -383,7 +392,141 @@ export class PageOverlay {
     document.documentElement.append(this.host);
   }
 
+  private syncRuntimeSubscriptions(): void {
+    this.toggleRenderListeners(this.needsRenderListeners());
+    this.toggleFocusListener(this.needsFocusTracking());
+    this.toggleClickSelectionListener(this.needsClickSelection());
+    this.toggleInspectListener(this.needsInspectTracking());
+    this.toggleMutationObserver(this.needsMutationObserver());
+  }
+
+  private toggleRenderListeners(shouldAttach: boolean): void {
+    if (this.renderListenersAttached === shouldAttach) {
+      return;
+    }
+
+    if (shouldAttach) {
+      window.addEventListener('scroll', this.queueRender, {passive: true});
+      window.addEventListener('resize', this.queueRender);
+    } else {
+      window.removeEventListener('scroll', this.queueRender);
+      window.removeEventListener('resize', this.queueRender);
+    }
+
+    this.renderListenersAttached = shouldAttach;
+  }
+
+  private toggleFocusListener(shouldAttach: boolean): void {
+    if (this.focusListenerAttached === shouldAttach) {
+      return;
+    }
+
+    if (shouldAttach) {
+      document.addEventListener('focusin', this.captureFocus, true);
+    } else {
+      document.removeEventListener('focusin', this.captureFocus, true);
+    }
+
+    this.focusListenerAttached = shouldAttach;
+  }
+
+  private toggleClickSelectionListener(shouldAttach: boolean): void {
+    if (this.clickSelectionAttached === shouldAttach) {
+      return;
+    }
+
+    if (shouldAttach) {
+      document.addEventListener('click', this.selectViolationFromPointer, true);
+    } else {
+      document.removeEventListener('click', this.selectViolationFromPointer, true);
+    }
+
+    this.clickSelectionAttached = shouldAttach;
+  }
+
+  private toggleInspectListener(shouldAttach: boolean): void {
+    if (this.inspectListenerAttached === shouldAttach) {
+      return;
+    }
+
+    if (shouldAttach) {
+      document.addEventListener('mousemove', this.showActiveNode, true);
+    } else {
+      document.removeEventListener('mousemove', this.showActiveNode, true);
+      this.latestMouseElement = null;
+      this.latestMouseSummary = null;
+    }
+
+    this.inspectListenerAttached = shouldAttach;
+  }
+
+  private toggleMutationObserver(shouldObserve: boolean): void {
+    if (shouldObserve) {
+      this.startMutationObserver();
+
+      return;
+    }
+
+    this.stopMutationObserver();
+  }
+
+  private startMutationObserver(): void {
+    if (this.observingMutations) {
+      return;
+    }
+
+    if (!this.mutationObserver) {
+      this.mutationObserver = new MutationObserver(this.queueRender);
+    }
+
+    this.mutationObserver.observe(document.documentElement, {attributes: true, childList: true, subtree: true});
+    this.observingMutations = true;
+  }
+
+  private stopMutationObserver(): void {
+    if (!this.observingMutations) {
+      return;
+    }
+
+    this.mutationObserver?.disconnect();
+    this.observingMutations = false;
+  }
+
+  private needsRenderListeners(): boolean {
+    return this.shouldRenderFrame();
+  }
+
+  private needsMutationObserver(): boolean {
+    return this.latestReport !== null && this.shouldRenderFrame();
+  }
+
+  private needsFocusTracking(): boolean {
+    return this.readerMode.enabled || this.layerVisibility.focusPath;
+  }
+
+  private needsClickSelection(): boolean {
+    return this.latestReport !== null && this.layerVisibility.pageOverlay && this.layerVisibility.errors;
+  }
+
+  private needsInspectTracking(): boolean {
+    return this.readerMode.inspectWithMouse && !this.readerMode.enabled;
+  }
+
+  private shouldRenderFrame(): boolean {
+    const hasOverlayLayers = this.latestReport !== null
+      && this.layerVisibility.pageOverlay
+      && (this.layerVisibility.errors || this.layerVisibility.landmarks || this.layerVisibility.focusPath);
+    const hasReaderHighlight = this.readerMode.enabled && this.latestSummary?.bounds !== undefined;
+    const hasInspectHighlight = this.readerMode.inspectWithMouse && !this.readerMode.enabled && this.latestMouseSummary?.bounds !== undefined;
+
+    return hasOverlayLayers || hasReaderHighlight || hasInspectHighlight;
+  }
+
   private readonly queueRender = (): void => {
+    if (!this.shouldRenderFrame() && this.svg.childElementCount === 0) {
+      return;
+    }
+
     if (this.renderQueued) {
       return;
     }
@@ -674,6 +817,14 @@ export class PageOverlay {
     if (!this.readerMode.inspectWithMouse || this.readerMode.enabled || !(event.target instanceof Element) || this.isOverlayEvent(event)) {
       return;
     }
+
+    const now = performance.now();
+
+    if (now - this.lastPointerSyncAt < 16) {
+      return;
+    }
+
+    this.lastPointerSyncAt = now;
 
     if (event.target === this.latestMouseElement) {
       this.positionInspectPopover(event);

@@ -89,7 +89,6 @@ textarea {
 .page-title strong,
 .active-node strong,
 .summary-list span,
-.finding-meta,
 .focus-filter span {
   display: block;
   overflow: hidden;
@@ -728,6 +727,7 @@ textarea {
   color: inherit;
   cursor: pointer;
   text-align: start;
+  white-space: normal;
 }
 
 .finding-header-button:focus-visible {
@@ -756,12 +756,23 @@ textarea {
   min-inline-size: 0;
 }
 
+.finding-copy {
+  display: grid;
+  gap: 0.25rem;
+  min-inline-size: 0;
+}
+
 .finding-main strong,
 .report-findings strong {
   display: block;
   color: var(--tui-text-primary);
   font: var(--tui-font-text-s-bold);
   overflow-wrap: anywhere;
+}
+
+.finding-title {
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .finding-meta,
@@ -774,6 +785,12 @@ textarea {
 
 .finding-meta {
   margin-block-start: 0.25rem;
+  margin-block-start: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .finding-body {

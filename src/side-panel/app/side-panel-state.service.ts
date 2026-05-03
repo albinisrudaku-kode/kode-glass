@@ -78,6 +78,7 @@ export class SidePanelStateService {
   private panelPort: chrome.runtime.Port | undefined;
   private sessionTabId: number | undefined;
   private analysisLoadingTimeout: ReturnType<typeof setTimeout> | undefined;
+  private detachVoicesChangedListener: (() => void) | undefined;
   private readonly activeNodeSignal = signal<AccessibleNodeSummary | null>(null);
   private readonly analysisErrorSignal = signal<string | null>(null);
   private readonly analysisLoadingSignal = signal(false);
@@ -151,6 +152,8 @@ export class SidePanelStateService {
 
   resetAnalysis(): void {
     this.finishAnalysisLoading();
+    this.commitReaderMode(initialReaderMode);
+    window.speechSynthesis?.cancel();
     this.activeNodeSignal.set(null);
     this.analysisErrorSignal.set(null);
     this.pageReportSignal.set(null);
@@ -164,8 +167,8 @@ export class SidePanelStateService {
   closePanelSession(): void {
     this.panelClosing = true;
     this.resetAnalysis();
+    this.teardownVoiceOptionsListener();
     this.disconnectPanelPort();
-    window.speechSynthesis?.cancel();
   }
 
   setAuditStandard(standard: AuditStandard): void {
@@ -358,6 +361,9 @@ export class SidePanelStateService {
         this.finishAnalysisLoading();
         this.activeNodeSignal.set(null);
         break;
+      case RuntimeMessageType.TabReloaded:
+        this.resetLocalState();
+        break;
       case RuntimeMessageType.ViolationSelected:
         this.selectedViolationSignal.set(message.payload);
         break;
@@ -371,7 +377,7 @@ export class SidePanelStateService {
       return;
     }
 
-    void this.sendScopedRuntimeMessage(message);
+    void this.sendScopedRuntimeMessage(message).catch(error => this.handleRuntimeDeliveryFailure(message, error));
   }
 
   private commitReaderMode(readerMode: ReaderModeSettings): void {
@@ -428,7 +434,7 @@ export class SidePanelStateService {
   private async sendScopedRuntimeMessage(message: RuntimeMessage): Promise<void> {
     const tabId = await this.getSessionTabId();
 
-    await chrome.runtime.sendMessage({...message, tabId}).catch(() => undefined);
+    await chrome.runtime.sendMessage({...message, tabId});
   }
 
   private async getSessionTabId(): Promise<number | undefined> {
@@ -508,12 +514,14 @@ export class SidePanelStateService {
   }
 
   private loadVoiceOptions(): void {
-    if (!window.speechSynthesis) {
+    const speechSynthesisApi = window.speechSynthesis;
+
+    if (!speechSynthesisApi) {
       return;
     }
 
     const updateVoices = (): void => {
-      const voices = window.speechSynthesis.getVoices()
+      const voices = speechSynthesisApi.getVoices()
         .map(voice => ({
           label: `${voice.name} (${voice.lang})`,
           lang: voice.lang,
@@ -533,7 +541,25 @@ export class SidePanelStateService {
     };
 
     updateVoices();
-    window.speechSynthesis.onvoiceschanged = updateVoices;
+    this.teardownVoiceOptionsListener();
+    speechSynthesisApi.addEventListener('voiceschanged', updateVoices);
+    this.detachVoicesChangedListener = (): void => {
+      speechSynthesisApi.removeEventListener('voiceschanged', updateVoices);
+    };
+  }
+
+  private teardownVoiceOptionsListener(): void {
+    this.detachVoicesChangedListener?.();
+    this.detachVoicesChangedListener = undefined;
+  }
+
+  private handleRuntimeDeliveryFailure(message: RuntimeMessage, error: unknown): void {
+    if (message.type !== RuntimeMessageType.AnalysisRequested) {
+      return;
+    }
+
+    this.finishAnalysisLoading();
+    this.analysisErrorSignal.set(`Unable to start analysis: ${getErrorMessage(error)}`);
   }
 
   private createReportMarkdown(): string {
@@ -648,6 +674,10 @@ function getSessionTabIdFromLocation(): number | undefined {
   return Number.isInteger(tabId) && tabId >= 0 ? tabId : undefined;
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function formatAuditStandard(standard: AuditStandard): string {
   return ({
     'best-practice': 'Best practices',
@@ -689,11 +719,7 @@ function getReadableSummary(violation: KodeGlassViolation): string {
     return 'Tap target is too small';
   }
 
-  if (summary.length <= 72) {
-    return summary;
-  }
-
-  return `${summary.slice(0, 69).trim()}...`;
+  return summary;
 }
 
 function getReadableGuidance(guidance: string): string {
