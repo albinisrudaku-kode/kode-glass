@@ -1,3 +1,4 @@
+import {computeAccessibleDescription, computeAccessibleName, getRole} from 'dom-accessibility-api';
 import type {
   AccessibilityReport,
   AccessibleNodeSummary,
@@ -6,13 +7,16 @@ import type {
   LandmarkSummary,
   LayerVisibility,
   ReaderModeSettings,
+  ViolationFilterSettings,
 } from '../shared/accessibility-report';
 import {getElementBounds, getElementSelector} from '../shared/engines/dom-summary';
+import {initialViolationFilterSettings, matchesViolationFilters} from '../shared/violation-filters';
 import type {ViolationSelectedPayload} from '../shared/messages';
 
 interface FocusPathPoint {
   readonly bounds?: ElementBounds;
   readonly label: string;
+  readonly order: number;
   readonly selector: string;
 }
 
@@ -50,12 +54,15 @@ export class PageOverlay {
   private readonly svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   private readonly activeNodeLabel = document.createElement('div');
   private focusPath: readonly FocusPathPoint[] = [];
+  private focusPathOrder = 0;
   private layerVisibility: LayerVisibility = initialLayerVisibility;
   private latestReport: AccessibilityReport | null = null;
   private latestFocusedElement: Element | null = null;
   private latestMouseElement: Element | null = null;
   private latestMouseSummary: AccessibleNodeSummary | null = null;
   private latestSummary: AccessibleNodeSummary | null = null;
+  private mutationObserver: MutationObserver | undefined;
+  private violationFilters: ViolationFilterSettings = initialViolationFilterSettings;
   private readerMode: ReaderModeSettings = {
     enabled: false,
     inspectWithMouse: false,
@@ -73,6 +80,8 @@ export class PageOverlay {
     document.addEventListener('focusin', this.captureFocus, true);
     document.addEventListener('click', this.selectViolationFromPointer, true);
     document.addEventListener('mousemove', this.showActiveNode, true);
+    this.mutationObserver = new MutationObserver(this.queueRender);
+    this.mutationObserver.observe(document.documentElement, {attributes: true, childList: true, subtree: true});
   }
 
   setLayerVisibility(layerVisibility: LayerVisibility): void {
@@ -85,14 +94,21 @@ export class PageOverlay {
     this.queueRender();
   }
 
+  setViolationFilters(violationFilters: ViolationFilterSettings): void {
+    this.violationFilters = violationFilters;
+    this.queueRender();
+  }
+
   reset(): void {
     this.latestReport = null;
     this.focusPath = [];
+    this.focusPathOrder = 0;
     this.layerVisibility = initialLayerVisibility;
     this.latestFocusedElement = null;
     this.latestMouseElement = null;
     this.latestMouseSummary = null;
     this.latestSummary = null;
+    this.violationFilters = initialViolationFilterSettings;
     this.svg.replaceChildren();
     this.hideActiveNode();
     window.speechSynthesis?.cancel();
@@ -388,7 +404,7 @@ export class PageOverlay {
     }
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.errors) {
-      this.latestReport.violations.forEach((violation, index) => this.renderViolation(violation, index));
+      this.getVisibleViolations().forEach((violation, index) => this.renderViolation(violation, index));
     }
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.focusPath) {
@@ -405,12 +421,14 @@ export class PageOverlay {
   }
 
   private renderViolation(violation: KodeGlassViolation, index: number): void {
-    if (!violation.bounds) {
+    const bounds = this.getCurrentViolationBounds(violation);
+
+    if (!bounds) {
       return;
     }
 
     this.renderBox({
-      bounds: violation.bounds,
+      bounds,
       color: severityColors[violation.severity],
       fill: overlayFillColors[violation.severity],
       label: `#${index + 1}`,
@@ -533,14 +551,16 @@ export class PageOverlay {
         this.svg.append(line);
       }
 
+      const label = String(point.order);
+      const radius = Math.max(10, label.length * 4 + 7);
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       circle.setAttribute('cx', String(centerX));
       circle.setAttribute('cy', String(centerY));
-      circle.setAttribute('r', '10');
+      circle.setAttribute('r', String(radius));
       circle.setAttribute('fill', '#4f46e5');
 
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.textContent = String(index + 1);
+      text.textContent = label;
       text.setAttribute('x', String(centerX));
       text.setAttribute('y', String(centerY + 4));
       text.setAttribute('fill', '#ffffff');
@@ -623,11 +643,13 @@ export class PageOverlay {
 
     const summary = this.getActiveNodeSummary(event.target);
     this.latestSummary = summary;
+    this.focusPathOrder += 1;
     this.focusPath = [...this.focusPath.filter(point => point.selector !== summary.selector), {
       bounds: summary.bounds,
       label: summary.name || summary.role,
+      order: this.focusPathOrder,
       selector: summary.selector,
-    }].slice(-12);
+    }];
     this.showReaderSubtitle(summary);
     this.queueRender();
   };
@@ -842,11 +864,21 @@ export class PageOverlay {
       return null;
     }
 
-    return this.latestReport.violations.find(violation => {
-      const bounds = violation.bounds;
+    return this.getVisibleViolations().find(violation => {
+      const bounds = this.getCurrentViolationBounds(violation);
 
       return Boolean(bounds && x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height);
     }) ?? null;
+  }
+
+  private getCurrentViolationBounds(violation: KodeGlassViolation): ElementBounds | undefined {
+    const element = getElementBySelector(violation.selector);
+
+    return element ? getElementBounds(element) : violation.bounds;
+  }
+
+  private getVisibleViolations(): readonly KodeGlassViolation[] {
+    return this.latestReport?.violations.filter(violation => matchesViolationFilters(violation, this.violationFilters)) ?? [];
   }
 
 }
@@ -894,45 +926,18 @@ function truncateLabel(label: string): string {
 }
 
 function getAccessibleName(element: Element): string {
-  const labelledBy = element.getAttribute('aria-labelledby');
-
-  if (labelledBy) {
-    return labelledBy
-      .split(/\s+/)
-      .map(id => document.getElementById(id)?.textContent?.trim() ?? '')
-      .filter(Boolean)
-      .join(' ');
-  }
-
-  return element.getAttribute('aria-label')
-    ?? element.getAttribute('alt')
-    ?? element.getAttribute('title')
-    ?? element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 120)
-    ?? '';
+  return computeAccessibleName(element).replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
 function getAccessibleDescription(element: Element): string {
-  const describedBy = element.getAttribute('aria-describedby');
-
-  if (describedBy) {
-    return describedBy
-      .split(/\s+/)
-      .map(id => document.getElementById(id)?.textContent?.trim() ?? '')
-      .filter(Boolean)
-      .join(' ');
-  }
-
-  return element.getAttribute('aria-description')
-    ?? element.getAttribute('placeholder')
-    ?? element.getAttribute('title')
-    ?? '';
+  return computeAccessibleDescription(element).replace(/\s+/g, ' ').trim();
 }
 
 function getAccessibleRole(element: Element): string {
-  const explicitRole = element.getAttribute('role');
+  const computedRole = getRole(element);
 
-  if (explicitRole) {
-    return explicitRole;
+  if (computedRole) {
+    return computedRole;
   }
 
   const tagName = element.tagName.toLowerCase();
@@ -1060,4 +1065,16 @@ function getStructuralStates(element: Element): readonly string[] {
 
 function isUrlLike(value: string): boolean {
   return /^https?:\/\//i.test(value);
+}
+
+function getElementBySelector(selector: string): Element | null {
+  if (!selector || selector === 'document') {
+    return null;
+  }
+
+  try {
+    return document.querySelector(selector);
+  } catch {
+    return null;
+  }
 }

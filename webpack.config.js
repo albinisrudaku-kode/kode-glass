@@ -6,11 +6,13 @@ const {AngularWebpackPlugin} = require('@ngtools/webpack');
 
 module.exports = (env, argv) => {
   const isProduction = argv.mode === 'production';
+  const extensionBundleBudget = 1.5 * 1024 * 1024;
 
   return {
     mode: isProduction ? 'production' : 'development',
     devtool: isProduction ? false : 'source-map',
     entry: {
+      'analysis-runner': './src/content-script/analysis-runner.ts',
       'side-panel': ['./src/side-panel/styles.less', './src/side-panel/main.ts'],
       background: './src/background/index.ts',
       'content-script': './src/content-script/index.ts'
@@ -65,6 +67,10 @@ module.exports = (env, argv) => {
       runtimeChunk: false,
       splitChunks: false
     },
+    performance: isProduction ? {
+      maxAssetSize: extensionBundleBudget,
+      maxEntrypointSize: extensionBundleBudget
+    } : false,
     plugins: [
       new AngularWebpackPlugin({
         tsconfig: path.resolve(__dirname, 'tsconfig.app.json')

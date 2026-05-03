@@ -8,13 +8,18 @@ import type {
   LayerName,
   LayerVisibility,
   ReaderModeSettings,
+  SeverityVisibility,
+  ViolationEngineFilter,
+  ViolationFilterSettings,
   ViolationSeverity,
 } from '../../shared/accessibility-report';
 import {RuntimeMessageType, type RuntimeMessage, type ViolationSelectedPayload} from '../../shared/messages';
+import {initialViolationFilterSettings, matchesViolationFilters} from '../../shared/violation-filters';
 
 export interface ViolationGroup {
   readonly count: number;
   readonly description?: string;
+  readonly engineLabel: string;
   readonly fix?: ViolationFix;
   readonly guidance?: string;
   readonly helpUrl?: string;
@@ -64,12 +69,17 @@ const initialReaderMode: ReaderModeSettings = {
   speak: false,
 };
 
+const sidePanelPortName = 'kode-glass-side-panel';
+
 @Injectable({providedIn: 'root'})
 export class SidePanelStateService {
   private connected = false;
+  private panelClosing = false;
+  private panelPort: chrome.runtime.Port | undefined;
   private sessionTabId: number | undefined;
   private analysisLoadingTimeout: ReturnType<typeof setTimeout> | undefined;
   private readonly activeNodeSignal = signal<AccessibleNodeSummary | null>(null);
+  private readonly analysisErrorSignal = signal<string | null>(null);
   private readonly analysisLoadingSignal = signal(false);
   private readonly auditSettingsSignal = signal<AuditSettings>(initialAuditSettings);
   private readonly layerVisibilitySignal = signal<LayerVisibility>(initialLayerVisibility);
@@ -78,10 +88,12 @@ export class SidePanelStateService {
   private readonly pageUrlSignal = signal('');
   private readonly readerModeSignal = signal<ReaderModeSettings>(initialReaderMode);
   private readonly selectedViolationSignal = signal<ViolationSelectedPayload | null>(null);
+  private readonly violationFilterSettingsSignal = signal<ViolationFilterSettings>(initialViolationFilterSettings);
   private readonly voiceOptionsSignal = signal<readonly ReaderVoiceOption[]>([]);
   private readonly violationsSignal = signal<readonly AccessibilityReport['violations'][number][]>([]);
 
   readonly activeNode = this.activeNodeSignal.asReadonly();
+  readonly analysisError = this.analysisErrorSignal.asReadonly();
   readonly analysisLoading = this.analysisLoadingSignal.asReadonly();
   readonly auditSettings = this.auditSettingsSignal.asReadonly();
   readonly layerVisibility = this.layerVisibilitySignal.asReadonly();
@@ -90,12 +102,19 @@ export class SidePanelStateService {
   readonly pageUrl = this.pageUrlSignal.asReadonly();
   readonly readerMode = this.readerModeSignal.asReadonly();
   readonly selectedViolation = this.selectedViolationSignal.asReadonly();
+  readonly severityVisibility = computed(() => this.violationFilterSettings().severity);
+  readonly violationEngineFilter = computed(() => this.violationFilterSettings().engine);
+  readonly violationFilterSettings = this.violationFilterSettingsSignal.asReadonly();
   readonly voiceOptions = this.voiceOptionsSignal.asReadonly();
   readonly violations = this.violationsSignal.asReadonly();
+  readonly availableSeverityCounts = computed(() => this.createSeverityCounts(this.createVisibleViolations({includeSeverityFilter: false})));
+  readonly engineStatuses = computed(() => this.pageReport()?.engineStatuses ?? []);
+  readonly hasEngineWarnings = computed(() => this.engineStatuses().some(status => status.status !== 'completed'));
   readonly headings = computed(() => this.pageReport()?.headings ?? []);
   readonly landmarks = computed(() => this.pageReport()?.landmarks ?? []);
   readonly visibleViolations = computed(() => this.createVisibleViolations());
   readonly hasViolations = computed(() => this.violations().length > 0);
+  readonly hasVisibleViolations = computed(() => this.visibleViolations().length > 0);
   readonly hasStructure = computed(() => this.headings().length > 0 || this.landmarks().length > 0);
   readonly reportSeverityCounts = computed(() => this.createSeverityCounts(this.violations()));
   readonly severityCounts = computed(() => this.createSeverityCounts());
@@ -112,14 +131,20 @@ export class SidePanelStateService {
       return;
     }
 
+    this.sessionTabId = getSessionTabIdFromLocation();
     chrome.runtime.onMessage.addListener(this.handleRuntimeMessage);
-    void this.captureSessionTab();
+    this.connectPanelPort();
+    void this.captureSessionTab().then(() => {
+      this.updatePanelPortTab(this.sessionTabId);
+      this.announcePanelOpened();
+    });
     this.loadVoiceOptions();
     this.connected = true;
   }
 
   requestAnalysis(): void {
     this.clearSelectedViolation();
+    this.analysisErrorSignal.set(null);
     this.startAnalysisLoading();
     this.sendRuntimeMessage({payload: this.auditSettings(), type: RuntimeMessageType.AnalysisRequested});
   }
@@ -127,15 +152,19 @@ export class SidePanelStateService {
   resetAnalysis(): void {
     this.finishAnalysisLoading();
     this.activeNodeSignal.set(null);
+    this.analysisErrorSignal.set(null);
     this.pageReportSignal.set(null);
     this.selectedViolationSignal.set(null);
     this.violationsSignal.set([]);
+    this.violationFilterSettingsSignal.set(initialViolationFilterSettings);
     this.layerVisibilitySignal.set(initialLayerVisibility);
     this.sendRuntimeMessage({payload: {}, type: RuntimeMessageType.ResetRequested});
   }
 
   closePanelSession(): void {
-    this.sendRuntimeMessage({payload: {}, type: RuntimeMessageType.ResetRequested});
+    this.panelClosing = true;
+    this.resetAnalysis();
+    this.disconnectPanelPort();
     window.speechSynthesis?.cancel();
   }
 
@@ -153,6 +182,25 @@ export class SidePanelStateService {
 
   clearSelectedViolation(): void {
     this.selectedViolationSignal.set(null);
+  }
+
+  toggleSeverityFilter(severity: ViolationSeverity): void {
+    this.violationFilterSettingsSignal.update(filterSettings => ({
+      ...filterSettings,
+      severity: {
+        ...filterSettings.severity,
+        [severity]: !filterSettings.severity[severity],
+      },
+    }));
+    this.sendViolationFiltersChanged();
+  }
+
+  setViolationEngineFilter(engineFilter: ViolationEngineFilter): void {
+    this.violationFilterSettingsSignal.update(filterSettings => ({
+      ...filterSettings,
+      engine: engineFilter,
+    }));
+    this.sendViolationFiltersChanged();
   }
 
   isFocusedGroup(group: ViolationGroup): boolean {
@@ -274,6 +322,12 @@ export class SidePanelStateService {
   }
 
   private readonly handleRuntimeMessage = (message: RuntimeMessage): false => {
+    if (message.type === RuntimeMessageType.ActiveTabChanged) {
+      this.changeSessionTab(message.payload.tabId);
+
+      return false;
+    }
+
     if (message.tabId !== undefined && this.sessionTabId !== undefined && message.tabId !== this.sessionTabId) {
       return false;
     }
@@ -284,6 +338,7 @@ export class SidePanelStateService {
         break;
       case RuntimeMessageType.AnalysisFailed:
         this.finishAnalysisLoading();
+        this.analysisErrorSignal.set(message.payload.message || 'Analysis failed.');
         break;
       case RuntimeMessageType.ContentReady:
         this.pageTitleSignal.set(message.payload.title || 'Untitled page');
@@ -295,6 +350,7 @@ export class SidePanelStateService {
         }
 
         this.finishAnalysisLoading();
+        this.analysisErrorSignal.set(null);
         this.pageReportSignal.set(message.payload);
         this.violationsSignal.set(message.payload.violations);
         break;
@@ -323,10 +379,44 @@ export class SidePanelStateService {
     this.sendRuntimeMessage({payload: readerMode, type: RuntimeMessageType.ReaderModeChanged});
   }
 
+  private sendViolationFiltersChanged(): void {
+    this.sendRuntimeMessage({payload: this.violationFilterSettings(), type: RuntimeMessageType.ViolationFiltersChanged});
+  }
+
+  private changeSessionTab(tabId: number): void {
+    if (this.sessionTabId === tabId) {
+      this.announcePanelOpened();
+
+      return;
+    }
+
+    this.sessionTabId = tabId;
+    this.resetLocalState();
+    this.updatePanelPortTab(tabId);
+    this.announcePanelOpened();
+  }
+
+  private resetLocalState(): void {
+    this.finishAnalysisLoading();
+    this.activeNodeSignal.set(null);
+    this.analysisErrorSignal.set(null);
+    this.pageReportSignal.set(null);
+    this.pageTitleSignal.set('Waiting for a page');
+    this.pageUrlSignal.set('');
+    this.readerModeSignal.set(initialReaderMode);
+    this.selectedViolationSignal.set(null);
+    this.violationsSignal.set([]);
+    this.violationFilterSettingsSignal.set(initialViolationFilterSettings);
+    this.layerVisibilitySignal.set(initialLayerVisibility);
+  }
+
   private startAnalysisLoading(): void {
     clearTimeout(this.analysisLoadingTimeout);
     this.analysisLoadingSignal.set(true);
-    this.analysisLoadingTimeout = setTimeout(() => this.analysisLoadingSignal.set(false), 30_000);
+    this.analysisLoadingTimeout = setTimeout(() => {
+      this.analysisLoadingSignal.set(false);
+      this.analysisErrorSignal.set('Analysis timed out after 30 seconds. The page may be blocking extension scripts or the scan may be too expensive.');
+    }, 30_000);
   }
 
   private finishAnalysisLoading(): void {
@@ -352,10 +442,68 @@ export class SidePanelStateService {
   }
 
   private async captureSessionTab(): Promise<void> {
+    if (this.sessionTabId !== undefined) {
+      return;
+    }
+
     const [activeTab] = await chrome.tabs.query({active: true, currentWindow: true}).catch(() => []);
 
     if (activeTab?.id !== undefined) {
       this.sessionTabId = activeTab.id;
+    }
+  }
+
+  private announcePanelOpened(): void {
+    this.sendRuntimeMessage({payload: {}, type: RuntimeMessageType.PanelOpened});
+  }
+
+  private connectPanelPort(): chrome.runtime.Port | undefined {
+    if (this.panelClosing || !chrome.runtime?.id) {
+      return undefined;
+    }
+
+    this.panelPort = chrome.runtime.connect({name: sidePanelPortName});
+    this.panelPort.onDisconnect.addListener(() => {
+      this.panelPort = undefined;
+    });
+
+    return this.panelPort;
+  }
+
+  private disconnectPanelPort(): void {
+    try {
+      this.panelPort?.disconnect();
+    } catch {
+      // Chrome can disconnect the side-panel port before pagehide/beforeunload handlers finish.
+    }
+
+    this.panelPort = undefined;
+  }
+
+  private updatePanelPortTab(tabId: number | undefined): void {
+    if (tabId === undefined || this.panelClosing) {
+      return;
+    }
+
+    if (!this.panelPort) {
+      this.connectPanelPort();
+    }
+
+    try {
+      this.panelPort?.postMessage({tabId});
+    } catch {
+      this.panelPort = undefined;
+      const reconnectedPort = this.connectPanelPort();
+
+      if (!reconnectedPort) {
+        return;
+      }
+
+      try {
+        reconnectedPort.postMessage({tabId});
+      } catch {
+        this.panelPort = undefined;
+      }
     }
   }
 
@@ -397,6 +545,7 @@ export class SidePanelStateService {
 
     const violations = report.violations.map((violation, index) => [
       `${index + 1}. ${getReadableSummary(violation)}`,
+      `   - Engine: ${formatViolationEngines(violation.sourceEngines ?? [violation.engine])}`,
       `   - Rule: ${violation.ruleId}`,
       `   - Severity: ${violation.severity}`,
       `   - Selector: ${violation.selector}`,
@@ -407,6 +556,12 @@ export class SidePanelStateService {
 
     const headings = report.headings.map(heading => `- H${heading.level}: ${heading.text || heading.selector}`);
     const landmarks = report.landmarks.map(landmark => `- ${landmark.role}${landmark.label ? `: ${landmark.label}` : ''}`);
+    const engineStatuses = report.engineStatuses.map(status => [
+      `- ${status.label}: ${status.status}`,
+      `  - Violations: ${status.violations}`,
+      `  - Duration: ${status.durationMs}ms`,
+      status.error ? `  - Note: ${status.error}` : '',
+    ].filter(Boolean).join('\n'));
 
     return [
       `# Accessibility Report: ${report.pageTitle}`,
@@ -414,6 +569,10 @@ export class SidePanelStateService {
       `URL: ${report.pageUrl}`,
       `Audit: ${formatAuditStandard(report.auditSettings.standard)}`,
       `Generated: ${new Date(report.generatedAt).toISOString()}`,
+      '',
+      '## Engine Status',
+      '',
+      engineStatuses.join('\n') || 'No engine status available.',
       '',
       `## Violations (${report.violations.length})`,
       '',
@@ -439,12 +598,13 @@ export class SidePanelStateService {
   private createViolationGroups(violations: readonly KodeGlassViolation[] = this.visibleViolations()): readonly ViolationGroup[] {
     const groups = violations.reduce((groupMap, violation) => {
       const title = getReadableSummary(violation);
-      const id = violation.ruleId;
+      const id = `${violation.engine}:${violation.ruleId}`;
       const group = groupMap.get(id);
 
       groupMap.set(id, {
         count: (group?.count ?? 0) + 1,
         description: group?.description ?? violation.description,
+        engineLabel: group?.engineLabel ?? formatViolationEngines(violation.sourceEngines ?? [violation.engine]),
         fix: group?.fix ?? createViolationFix(violation),
         guidance: group?.guidance ?? (violation.guidance ? getReadableGuidance(violation.guidance) : undefined),
         helpUrl: group?.helpUrl ?? violation.helpUrl,
@@ -467,17 +627,25 @@ export class SidePanelStateService {
     });
   }
 
-  private createVisibleViolations(): readonly KodeGlassViolation[] {
+  private createVisibleViolations(options: {readonly includeSeverityFilter: boolean} = {includeSeverityFilter: true}): readonly KodeGlassViolation[] {
     const selectedViolation = this.selectedViolation();
+    const filterSettings = this.violationFilterSettings();
 
-    if (!selectedViolation) {
-      return this.violations();
-    }
+    return this.violations().filter(violation => {
+      const matchesSelectedViolation = !selectedViolation
+        || violation.id === selectedViolation.violationId
+        || violation.selector === selectedViolation.selector;
+      const matchesFilters = matchesViolationFilters(violation, filterSettings, options);
 
-    return this.violations().filter(violation =>
-      violation.id === selectedViolation.violationId || violation.selector === selectedViolation.selector,
-    );
+      return matchesSelectedViolation && matchesFilters;
+    });
   }
+}
+
+function getSessionTabIdFromLocation(): number | undefined {
+  const tabId = Number(new URLSearchParams(location.search).get('tabId'));
+
+  return Number.isInteger(tabId) && tabId >= 0 ? tabId : undefined;
 }
 
 function formatAuditStandard(standard: AuditStandard): string {
@@ -487,6 +655,19 @@ function formatAuditStandard(standard: AuditStandard): string {
     wcag2aa: 'WCAG AA',
     wcag2aaa: 'WCAG AAA',
   } as Record<AuditStandard, string>)[standard];
+}
+
+function formatViolationEngines(engines: readonly KodeGlassViolation['engine'][]): string {
+  return engines.map(formatViolationEngine).join(' + ');
+}
+
+function formatViolationEngine(engine: KodeGlassViolation['engine']): string {
+  return ({
+    'axe-core': 'axe',
+    'ibm-equal-access': 'IBM',
+    manual: 'Manual',
+    playwright: 'Playwright',
+  } as Record<KodeGlassViolation['engine'], string>)[engine];
 }
 
 function getReadableSummary(violation: KodeGlassViolation): string {

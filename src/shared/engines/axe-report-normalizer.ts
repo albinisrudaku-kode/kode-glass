@@ -9,8 +9,8 @@ export function normalizeAxeViolations(results: readonly Result[]): readonly Kod
 }
 
 function normalizeAxeNode(result: Result, node: NodeResult, nodeIndex: number): KodeGlassViolation {
-  const selector = node.target.join(', ');
-  const element = document.querySelector(selector);
+  const selector = getAxeTargets(node).map(formatAxeTarget).join(', ');
+  const element = getAxeTargetElement(node);
 
   return {
     bounds: element ? getElementBounds(element) : undefined,
@@ -37,5 +37,45 @@ function getViolationSeverity(impact: Result['impact']): ViolationSeverity {
       return 'warning';
     default:
       return 'info';
+  }
+}
+
+function getAxeTargetElement(node: NodeResult): Element | null {
+  const cssSelectors: string[] = [];
+
+  for (const target of getAxeTargets(node)) {
+    if (typeof target === 'string') {
+      cssSelectors.push(target);
+    }
+  }
+
+  for (const selector of cssSelectors) {
+    const element = findElementByCssSelector(selector);
+
+    if (element) {
+      return element;
+    }
+  }
+
+  if (!cssSelectors.length) {
+    return null;
+  }
+
+  return findElementByCssSelector(cssSelectors.join(', '));
+}
+
+function getAxeTargets(node: NodeResult): readonly unknown[] {
+  return node.target as readonly unknown[];
+}
+
+function formatAxeTarget(target: unknown): string {
+  return typeof target === 'string' ? target : JSON.stringify(target);
+}
+
+function findElementByCssSelector(cssSelector: string): Element | null {
+  try {
+    return document.querySelector(cssSelector);
+  } catch {
+    return null;
   }
 }

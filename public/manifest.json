@@ -22,16 +22,5 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "js": ["content-script.js"],
-      "matches": ["<all_urls>"],
-      "run_at": "document_idle"
-    }
-  ],
-  "host_permissions": ["<all_urls>"],
-  "permissions": ["activeTab", "sidePanel", "scripting", "tabs"],
-  "side_panel": {
-    "default_path": "side-panel.html"
-  }
+  "permissions": ["activeTab", "sidePanel", "scripting", "tabs"]
 }

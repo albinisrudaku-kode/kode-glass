@@ -3,7 +3,7 @@ import {FormsModule} from '@angular/forms';
 import {TuiAppearance, TuiButton, TuiFilterByInputPipe, TuiIcon, TuiLoader, TuiRoot, TuiSlider} from '@taiga-ui/core';
 import {TuiLink} from '@taiga-ui/core/components/link';
 import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiChip, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
-import type {AuditStandard, LayerName} from '../../shared/accessibility-report';
+import type {AuditStandard, LayerName, ViolationEngineFilter, ViolationSeverity} from '../../shared/accessibility-report';
 import {SidePanelStateService, type PreviewMode} from './side-panel-state.service';
 
 type PanelTab = 'violations' | 'structure' | 'report';
@@ -17,6 +17,16 @@ interface PanelTabItem {
 
 interface AuditStandardItem {
   readonly id: AuditStandard;
+  readonly label: string;
+}
+
+interface SeverityFilterItem {
+  readonly id: ViolationSeverity;
+  readonly label: string;
+}
+
+interface ViolationEngineFilterItem {
+  readonly id: ViolationEngineFilter;
   readonly label: string;
 }
 
@@ -99,6 +109,16 @@ export class AppComponent {
     {id: 'wcag2aaa', label: 'WCAG AAA'},
     {id: 'best-practice', label: 'Best'},
   ];
+  protected readonly severityFilters: readonly SeverityFilterItem[] = [
+    {id: 'critical', label: 'Critical'},
+    {id: 'warning', label: 'Warning'},
+    {id: 'info', label: 'Info'},
+  ];
+  protected readonly violationEngineFilters: readonly ViolationEngineFilterItem[] = [
+    {id: 'both', label: 'Both'},
+    {id: 'axe', label: 'axe'},
+    {id: 'ibm', label: 'IBM'},
+  ];
   protected readonly pageOrigin = computed(() => {
     const pageUrl = this.state.pageUrl();
 
@@ -141,6 +161,14 @@ export class AppComponent {
 
   protected clearSelectedViolation(): void {
     this.state.clearSelectedViolation();
+  }
+
+  protected toggleSeverityFilter(severity: ViolationSeverity): void {
+    this.state.toggleSeverityFilter(severity);
+  }
+
+  protected setViolationEngineFilter(engineFilter: ViolationEngineFilter): void {
+    this.state.setViolationEngineFilter(engineFilter);
   }
 
   protected isViolationGroupExpanded(groupId: string): boolean {

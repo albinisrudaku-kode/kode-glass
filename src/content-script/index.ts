@@ -1,73 +1,89 @@
 import {RuntimeMessageType, type ContentReadyMessage, type RuntimeMessage} from '../shared/messages';
-import {analyzeCurrentPage} from '../shared/engines/axe-engine';
 import type {AuditSettings} from '../shared/accessibility-report';
 import {PageOverlay} from './page-overlay';
+import type {analyzeCurrentPage} from '../shared/engines/accessibility-engine';
 
-const pageOverlay = new PageOverlay();
+type AnalyzeCurrentPage = typeof analyzeCurrentPage;
 
-pageOverlay.onActiveNodeChanged(activeNode => {
-  if (!chrome.runtime?.id) {
-    return;
-  }
-
-  void chrome.runtime.sendMessage({
-    payload: activeNode,
-    type: RuntimeMessageType.ActiveNodeChanged,
-  });
-});
-
-pageOverlay.onViolationSelected(payload => {
-  if (!chrome.runtime?.id) {
-    return;
-  }
-
-  void chrome.runtime.sendMessage({
-    payload,
-    type: RuntimeMessageType.ViolationSelected,
-  });
-});
-
-const contentReadyMessage: ContentReadyMessage = {
-  payload: {
-    title: document.title,
-    url: location.href,
-  },
-  type: RuntimeMessageType.ContentReady,
-};
-
-if (chrome.runtime?.id) {
-  void chrome.runtime.sendMessage(contentReadyMessage);
+interface KodeGlassWindow extends Window {
+  __kodeGlassAnalyzeCurrentPage?: AnalyzeCurrentPage;
+  __kodeGlassContentScriptInitialized?: boolean;
 }
 
-chrome.runtime.onMessage.addListener((message: RuntimeMessage) => {
-  if (message.type === RuntimeMessageType.AnalysisRequested) {
-    void runAnalysis(message.payload).catch(error => sendAnalysisFailure(error));
-  }
+const kodeGlassWindow = window as KodeGlassWindow;
 
-  if (message.type === RuntimeMessageType.LayerVisibilityChanged) {
-    pageOverlay.setLayerVisibility(message.payload);
-  }
+if (!kodeGlassWindow.__kodeGlassContentScriptInitialized) {
+  kodeGlassWindow.__kodeGlassContentScriptInitialized = true;
+  initializeContentScript();
+}
 
-  if (message.type === RuntimeMessageType.ReaderModeChanged) {
-    pageOverlay.setReaderMode(message.payload);
-  }
+function initializeContentScript(): void {
+  const pageOverlay = new PageOverlay();
 
-  if (message.type === RuntimeMessageType.ResetRequested) {
-    pageOverlay.reset();
+  pageOverlay.onActiveNodeChanged(activeNode => {
+    if (!chrome.runtime?.id) {
+      return;
+    }
 
     void chrome.runtime.sendMessage({
-      payload: {},
-      type: RuntimeMessageType.ResetCompleted,
+      payload: activeNode,
+      type: RuntimeMessageType.ActiveNodeChanged,
     });
+  });
+
+  pageOverlay.onViolationSelected(payload => {
+    if (!chrome.runtime?.id) {
+      return;
+    }
+
+    void chrome.runtime.sendMessage({
+      payload,
+      type: RuntimeMessageType.ViolationSelected,
+    });
+  });
+
+  if (chrome.runtime?.id) {
+    void chrome.runtime.sendMessage(createContentReadyMessage());
   }
 
-  return false;
-});
+  chrome.runtime.onMessage.addListener((message: RuntimeMessage) => {
+    if (message.type === RuntimeMessageType.PageContextRequested) {
+      void chrome.runtime.sendMessage(createContentReadyMessage()).catch(() => undefined);
+    }
 
-async function runAnalysis(auditSettings: AuditSettings): Promise<void> {
-  await chrome.runtime.sendMessage(contentReadyMessage);
+    if (message.type === RuntimeMessageType.AnalysisRequested) {
+      void runAnalysis(pageOverlay, message.payload).catch(error => sendAnalysisFailure(error));
+    }
 
-  const report = await analyzeCurrentPage(auditSettings);
+    if (message.type === RuntimeMessageType.LayerVisibilityChanged) {
+      pageOverlay.setLayerVisibility(message.payload);
+    }
+
+    if (message.type === RuntimeMessageType.ReaderModeChanged) {
+      pageOverlay.setReaderMode(message.payload);
+    }
+
+    if (message.type === RuntimeMessageType.ViolationFiltersChanged) {
+      pageOverlay.setViolationFilters(message.payload);
+    }
+
+    if (message.type === RuntimeMessageType.ResetRequested) {
+      pageOverlay.reset();
+
+      void chrome.runtime.sendMessage({
+        payload: {},
+        type: RuntimeMessageType.ResetCompleted,
+      });
+    }
+
+    return false;
+  });
+}
+
+async function runAnalysis(pageOverlay: PageOverlay, auditSettings: AuditSettings): Promise<void> {
+  await chrome.runtime.sendMessage(createContentReadyMessage());
+
+  const report = await getAnalyzeCurrentPage()(auditSettings);
 
   pageOverlay.setReport(report);
 
@@ -75,6 +91,26 @@ async function runAnalysis(auditSettings: AuditSettings): Promise<void> {
     payload: report,
     type: RuntimeMessageType.ReportGenerated,
   });
+}
+
+function createContentReadyMessage(): ContentReadyMessage {
+  return {
+    payload: {
+      title: document.title,
+      url: location.href,
+    },
+    type: RuntimeMessageType.ContentReady,
+  };
+}
+
+function getAnalyzeCurrentPage(): AnalyzeCurrentPage {
+  const analyzeCurrentPage = kodeGlassWindow.__kodeGlassAnalyzeCurrentPage;
+
+  if (!analyzeCurrentPage) {
+    throw new Error('The accessibility analyzer bundle was not loaded. Try running the scan again.');
+  }
+
+  return analyzeCurrentPage;
 }
 
 function sendAnalysisFailure(error: unknown): void {

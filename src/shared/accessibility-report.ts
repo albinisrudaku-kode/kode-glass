@@ -4,6 +4,28 @@ export type LayerName = 'errors' | 'focusPath' | 'landmarks' | 'pageOverlay';
 
 export type AuditStandard = 'wcag2a' | 'wcag2aa' | 'wcag2aaa' | 'best-practice';
 
+export type AccessibilityEngine = 'axe-core' | 'ibm-equal-access' | 'playwright' | 'manual';
+
+export type AccessibilityEngineRunStatus = 'completed' | 'failed' | 'skipped';
+
+export interface AccessibilityEngineStatus {
+  readonly durationMs: number;
+  readonly engine: AccessibilityEngine;
+  readonly error?: string;
+  readonly label: string;
+  readonly status: AccessibilityEngineRunStatus;
+  readonly violations: number;
+}
+
+export type ViolationEngineFilter = 'axe' | 'both' | 'ibm';
+
+export type SeverityVisibility = Record<ViolationSeverity, boolean>;
+
+export interface ViolationFilterSettings {
+  readonly engine: ViolationEngineFilter;
+  readonly severity: SeverityVisibility;
+}
+
 export interface AuditSettings {
   readonly standard: AuditStandard;
 }
@@ -35,7 +57,7 @@ export interface AccessibleNodeSummary {
 export interface KodeGlassViolation {
   readonly bounds?: ElementBounds;
   readonly description?: string;
-  readonly engine: 'axe-core' | 'playwright' | 'manual';
+  readonly engine: AccessibilityEngine;
   readonly guidance?: string;
   readonly helpUrl?: string;
   readonly id: string;
@@ -43,6 +65,7 @@ export interface KodeGlassViolation {
   readonly ruleId: string;
   readonly selector: string;
   readonly severity: ViolationSeverity;
+  readonly sourceEngines?: readonly AccessibilityEngine[];
   readonly summary: string;
   readonly title?: string;
 }
@@ -62,6 +85,7 @@ export interface LandmarkSummary {
 
 export interface AccessibilityReport {
   readonly auditSettings: AuditSettings;
+  readonly engineStatuses: readonly AccessibilityEngineStatus[];
   readonly generatedAt: number;
   readonly headings: readonly HeadingSummary[];
   readonly landmarks: readonly LandmarkSummary[];
