@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kode Glass — Privacy Policy</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height: 1.55; max-width: 46rem; margin: 0 auto; padding: 1.5rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e8e8e8; background: #121212; }
+      a { color: #8ec5ff; }
+    }
+    h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+    .meta { font-size: 0.9rem; opacity: 0.85; margin-bottom: 2rem; }
+    h2 { font-size: 1.15rem; margin-top: 1.75rem; }
+    ul { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Kode Glass — Privacy Policy</h1>
+      <p class="meta"><strong>Effective date:</strong> May 5, 2026 · <strong>Document version:</strong> 1.0</p>
+    </header>
+
+    <section id="controller">
+      <h2>1. Who we are</h2>
+      <p>This privacy policy describes how <strong>KodeLabs</strong> (“we”, “us”) handles information when you use the <strong>Kode Glass</strong> browser extension (“Extension”), distributed through the Chrome Web Store.</p>
+      <p><strong>Privacy contact:</strong> <a href="mailto:albinisrudaku@kodelabs.com">albinisrudaku@kodelabs.com</a></p>
+    </section>
+
+    <section id="scope">
+      <h2>2. Scope</h2>
+      <p>This policy applies only to the Extension. It does not govern third-party websites you visit, Google’s Chrome browser or Chrome Web Store policies in general, or other companies’ services except where we explain their role below.</p>
+    </section>
+
+    <section id="data">
+      <h2>3. Information the Extension processes</h2>
+      <p>The Extension helps you run accessibility-related diagnostics and overlays on web pages you actively use with the Extension. Depending on how you use it, it may process:</p>
+      <ul>
+        <li><strong>Web page information</strong> needed for accessibility analysis—for example the page URL, page title, and document structure and content visible to the checker (such as elements, roles, labels, headings, landmarks, and detected issues).</li>
+        <li><strong>Extension UI preferences</strong> stored locally in your browser (for example theme selection for the side panel via <code>localStorage</code>).</li>
+      </ul>
+      <p>The Extension requests these Chrome permissions: <code>activeTab</code>, <code>sidePanel</code>, <code>scripting</code>, <code>tabs</code>, and <code>tts</code> (text-to-speech when you enable narration).</p>
+    </section>
+
+    <section id="use">
+      <h2>4. How we use information</h2>
+      <p>We use the information above solely to provide Extension functionality you request: displaying diagnostics in the side panel, highlighting elements on the page, generating reports in the UI, and optional narration. We do not use it for advertising profiling inside the Extension.</p>
+    </section>
+
+    <section id="sharing">
+      <h2>5. Transmission and third parties</h2>
+      <p><strong>No developer-hosted analytics:</strong> Based on the design of this Extension, scan results and page-derived diagnostics are processed inside Chrome and exchanged between the Extension’s own components (for example the side panel, background service worker, and content scripts). We do not transmit those scan contents to servers we operate for collection or analytics.</p>
+      <p><strong>Platform and embedded services:</strong></p>
+      <ul>
+        <li><strong>Chrome APIs:</strong> Chrome processes Extension messaging and permissions according to Google’s practices.</li>
+        <li><strong>Text-to-speech:</strong> When you enable narration, the Extension uses Chrome’s <code>chrome.tts</code> API. Your device and Chrome handle synthesis and audio output.</li>
+        <li><strong>Fonts:</strong> The side panel UI may request fonts from <strong>Google Fonts</strong> when the panel loads; that request is governed by Google’s terms and your network environment.</li>
+        <li><strong>Documentation links:</strong> If you open external help or documentation links from scan results (for example IBM Accessibility guidance URLs shown as references), those sites apply their own privacy policies.</li>
+      </ul>
+    </section>
+
+    <section id="retention">
+      <h2>6. Retention</h2>
+      <p>Analysis results shown in the Extension exist for your session as you use the Extension until you reset state, reload, or close the UI as applicable. Local preference storage remains until you clear extension site data or uninstall the Extension.</p>
+    </section>
+
+    <section id="security">
+      <h2>7. Security</h2>
+      <p>We rely on Chrome’s extension security model (isolated extension contexts, permission prompts, and updates via the Chrome Web Store). You should keep Chrome updated and install the Extension only from the official Chrome Web Store listing.</p>
+    </section>
+
+    <section id="rights">
+      <h2>8. Your choices and rights</h2>
+      <p>You choose when to open the side panel and run analysis. You may clear locally stored Extension UI data through Chrome’s settings for the Extension, or uninstall the Extension to remove it and its stored side-panel data.</p>
+      <p>If applicable privacy laws give you rights (such as access or deletion) with respect to personal data we process, contact us at the privacy email above. Much of what the Extension processes exists only locally on your device and is not stored by us as a cloud database tied to your identity as part of the Extension’s core operation described here.</p>
+    </section>
+
+    <section id="children">
+      <h2>9. Children</h2>
+      <p>The Extension is not directed at children under 13, and we do not knowingly collect personal information from children through the Extension.</p>
+    </section>
+
+    <section id="changes">
+      <h2>10. Changes to this policy</h2>
+      <p>We may update this policy when the Extension’s features or legal requirements change. We will revise the effective date and document version when we do. Continued use after the effective date constitutes acceptance of the updated policy.</p>
+    </section>
+
+    <footer class="meta">
+      <p>© KodeLabs. All rights reserved.</p>
+    </footer>
+  </main>
+</body>
+</html>

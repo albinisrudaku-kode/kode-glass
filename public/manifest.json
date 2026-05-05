@@ -22,5 +22,5 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["activeTab", "sidePanel", "scripting", "tabs"]
+  "permissions": ["activeTab", "sidePanel", "scripting", "tabs", "tts"]
 }

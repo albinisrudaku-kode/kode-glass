@@ -1,4 +1,4 @@
-import {RuntimeMessageType, type RuntimeMessage} from '../shared/messages';
+import {RuntimeMessageType, type ReaderSpeakPayload, type RuntimeMessage} from '../shared/messages';
 
 const latestMessagesByTab = new Map<number, RuntimeMessage>();
 const analyzerInjectedTabs = new Set<number>();
@@ -36,7 +36,27 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
     return false;
   }
 
-  if (tabId !== undefined && message.type !== RuntimeMessageType.ActiveNodeChanged) {
+  if (
+    message.type === RuntimeMessageType.ReaderModeChanged
+    && (!message.payload.speak || !message.payload.enabled)
+  ) {
+    chrome.tts.stop();
+  }
+
+  if (message.type === RuntimeMessageType.ResetRequested) {
+    chrome.tts.stop();
+  }
+
+  if (message.type === RuntimeMessageType.ReaderSpeakRequested) {
+    speakReaderLine(message.payload);
+
+    return false;
+  }
+
+  if (
+    tabId !== undefined
+    && message.type !== RuntimeMessageType.ActiveNodeChanged
+  ) {
     rememberLatestTabMessage(tabId, messageForPanel);
   }
 
@@ -283,6 +303,61 @@ async function sendTabMessage(tabId: number, message: RuntimeMessage): Promise<b
   } catch {
     return false;
   }
+}
+
+function speakReaderLine(payload: ReaderSpeakPayload): void {
+  const {readerMode, text} = payload;
+
+  if (!readerMode.speak || !readerMode.enabled || !text.trim()) {
+    return;
+  }
+
+  chrome.tts.stop();
+  chrome.tts.getVoices(voices => {
+    const voiceName = resolveChromeTtsVoiceName(voices, readerMode);
+
+    chrome.tts.speak(text, {
+      gender: 'female',
+      lang: 'en-US',
+      pitch: 1,
+      rate: readerMode.rate ?? 0.92,
+      ...(voiceName ? {voiceName} : {}),
+    });
+  });
+}
+
+function resolveChromeTtsVoiceName(
+  voices: readonly chrome.tts.TtsVoice[],
+  readerMode: ReaderSpeakPayload['readerMode'],
+): string | undefined {
+  const preferredName = readerMode.voiceName?.toLowerCase() ?? '';
+
+  if (preferredName) {
+    const exact = voices.find(voice => voice.voiceName === readerMode.voiceName);
+
+    if (exact?.voiceName) {
+      return exact.voiceName;
+    }
+
+    const fuzzy = voices.find(
+      voice =>
+        voice.lang?.toLowerCase().startsWith('en')
+        && voice.voiceName?.toLowerCase().includes(preferredName),
+    );
+
+    if (fuzzy?.voiceName) {
+      return fuzzy.voiceName;
+    }
+  }
+
+  const googleUs = voices.find(
+    voice =>
+      voice.lang?.toLowerCase().startsWith('en-us')
+      && voice.voiceName !== undefined
+      && /google/i.test(voice.voiceName),
+  );
+
+  return googleUs?.voiceName;
 }
 
 function rememberLatestTabMessage(tabId: number, message: RuntimeMessage): void {

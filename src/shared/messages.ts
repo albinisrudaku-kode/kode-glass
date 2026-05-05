@@ -17,6 +17,7 @@ export const enum RuntimeMessageType {
   PageContextRequested = 'page-context.requested',
   PanelOpened = 'side-panel.opened',
   ReaderModeChanged = 'reader-mode.changed',
+  ReaderSpeakRequested = 'reader.speak-requested',
   ReportGenerated = 'report.generated',
   ResetRequested = 'analysis.reset-requested',
   ResetCompleted = 'analysis.reset-completed',
@@ -124,6 +125,16 @@ export type ReaderModeChangedMessage = MessageEnvelope<
   ReaderModeSettings
 >;
 
+export interface ReaderSpeakPayload {
+  readonly readerMode: ReaderModeSettings;
+  readonly text: string;
+}
+
+export type ReaderSpeakRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.ReaderSpeakRequested,
+  ReaderSpeakPayload
+>;
+
 export type RuntimeMessage =
   | ActiveNodeChangedMessage
   | ActiveTabChangedMessage
@@ -134,6 +145,7 @@ export type RuntimeMessage =
   | PageContextRequestedMessage
   | PanelOpenedMessage
   | ReaderModeChangedMessage
+  | ReaderSpeakRequestedMessage
   | ReportGeneratedMessage
   | ResetCompletedMessage
   | ResetRequestedMessage

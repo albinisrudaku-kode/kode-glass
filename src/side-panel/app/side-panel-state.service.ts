@@ -14,6 +14,7 @@ import type {
   ViolationSeverity,
 } from '../../shared/accessibility-report';
 import {RuntimeMessageType, type RuntimeMessage, type ViolationSelectedPayload} from '../../shared/messages';
+import {pickDefaultReaderVoice} from '../../shared/reader-voice';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../../shared/violation-filters';
 
 export interface ViolationGroup {
@@ -46,6 +47,7 @@ export interface ReaderVoiceOption {
   readonly label: string;
   readonly lang: string;
   readonly localService: boolean;
+  readonly name: string;
   readonly voiceURI: string;
 }
 
@@ -224,11 +226,11 @@ export class SidePanelStateService {
     const readerMode = this.readerMode();
 
     this.commitReaderMode({
+      ...readerMode,
       enabled,
       inspectWithMouse: enabled ? false : readerMode.inspectWithMouse,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: enabled ? readerMode.speak : false,
-      voiceURI: readerMode.voiceURI,
     });
   }
 
@@ -240,11 +242,11 @@ export class SidePanelStateService {
     const readerMode = this.readerMode();
 
     this.commitReaderMode({
+      ...readerMode,
       enabled: mode === 'reader',
       inspectWithMouse: mode === 'inspect',
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: mode === 'reader' ? readerMode.speak : false,
-      voiceURI: readerMode.voiceURI,
     });
   }
 
@@ -252,11 +254,11 @@ export class SidePanelStateService {
     const readerMode = this.readerMode();
 
     this.commitReaderMode({
+      ...readerMode,
       enabled: inspectWithMouse ? false : readerMode.enabled,
       inspectWithMouse,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: inspectWithMouse ? false : readerMode.speak,
-      voiceURI: readerMode.voiceURI,
     });
   }
 
@@ -268,22 +270,23 @@ export class SidePanelStateService {
     const readerMode = this.readerMode();
 
     this.commitReaderMode({
+      ...readerMode,
       enabled: readerMode.enabled || speak,
       inspectWithMouse: readerMode.inspectWithMouse,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak,
-      voiceURI: readerMode.voiceURI,
     });
   }
 
   setReaderVoice(voiceURI: string): void {
     const readerMode = this.readerMode();
+    const match = voiceURI ? this.voiceOptions().find(voice => voice.voiceURI === voiceURI) : undefined;
 
     this.commitReaderMode({
-      enabled: readerMode.enabled,
-      inspectWithMouse: readerMode.inspectWithMouse,
+      ...readerMode,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: readerMode.speak,
+      voiceName: match?.name,
       voiceURI: voiceURI || undefined,
     });
   }
@@ -292,11 +295,9 @@ export class SidePanelStateService {
     const readerMode = this.readerMode();
 
     this.commitReaderMode({
-      enabled: readerMode.enabled,
-      inspectWithMouse: readerMode.inspectWithMouse,
+      ...readerMode,
       rate,
       speak: readerMode.speak,
-      voiceURI: readerMode.voiceURI,
     });
   }
 
@@ -526,6 +527,7 @@ export class SidePanelStateService {
           label: `${voice.name} (${voice.lang})`,
           lang: voice.lang,
           localService: voice.localService,
+          name: voice.name,
           voiceURI: voice.voiceURI,
         }))
         .sort((first, second) => Number(second.localService) - Number(first.localService) || first.label.localeCompare(second.label));
@@ -533,10 +535,17 @@ export class SidePanelStateService {
       this.voiceOptionsSignal.set(voices);
 
       if (!this.readerMode().voiceURI) {
-        this.readerModeSignal.update((readerMode): ReaderModeSettings => ({
-          ...readerMode,
-          voiceURI: voices.find(voice => /natural|online|zira|aria|jenny|guy|susan|samantha/i.test(voice.label))?.voiceURI ?? voices[0]?.voiceURI,
-        }));
+        const picked = pickDefaultReaderVoice(voices);
+
+        if (picked) {
+          const readerMode = this.readerMode();
+
+          this.commitReaderMode({
+            ...readerMode,
+            voiceName: picked.voiceName,
+            voiceURI: picked.voiceURI,
+          });
+        }
       }
     };
 

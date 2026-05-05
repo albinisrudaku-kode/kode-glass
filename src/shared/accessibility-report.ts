@@ -35,6 +35,7 @@ export interface ReaderModeSettings {
   readonly inspectWithMouse: boolean;
   readonly rate?: number;
   readonly speak: boolean;
+  readonly voiceName?: string;
   readonly voiceURI?: string;
 }
 

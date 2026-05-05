@@ -9,6 +9,7 @@ import type {
   ReaderModeSettings,
   ViolationFilterSettings,
 } from '../shared/accessibility-report';
+import {RuntimeMessageType} from '../shared/messages';
 import {getElementBounds, getElementSelector} from '../shared/engines/dom-summary';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../shared/violation-filters';
 import type {ViolationSelectedPayload} from '../shared/messages';
@@ -870,7 +871,7 @@ export class PageOverlay {
     this.activeNodeChanged(summary);
 
     if (this.readerMode.speak) {
-      speak(text, this.readerMode);
+      requestReaderSpeak(text, this.readerMode);
     }
   }
 
@@ -1054,22 +1055,15 @@ function getPreviewDetails(states: readonly string[]): {readonly destination?: s
   };
 }
 
-function speak(text: string, readerMode: ReaderModeSettings): void {
-  if (!window.speechSynthesis) {
+function requestReaderSpeak(text: string, readerMode: ReaderModeSettings): void {
+  if (!chrome.runtime?.id) {
     return;
   }
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  const voice = window.speechSynthesis.getVoices().find(option => option.voiceURI === readerMode.voiceURI);
-
-  if (voice) {
-    utterance.voice = voice;
-  }
-
-  utterance.rate = readerMode.rate ?? 0.92;
-  utterance.pitch = 1;
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utterance);
+  void chrome.runtime.sendMessage({
+    payload: {readerMode, text},
+    type: RuntimeMessageType.ReaderSpeakRequested,
+  });
 }
 
 function truncateLabel(label: string): string {
