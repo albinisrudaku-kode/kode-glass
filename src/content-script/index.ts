@@ -1,4 +1,4 @@
-import {RuntimeMessageType, type ContentReadyMessage, type RuntimeMessage} from '../shared/messages';
+import {RuntimeMessageType, type CaptureBoundsRequestPayload, type ContentReadyMessage, type RuntimeMessage} from '../shared/messages';
 import type {AuditSettings} from '../shared/accessibility-report';
 import {PageOverlay} from './page-overlay';
 import type {analyzeCurrentPage} from '../shared/engines/accessibility-engine';
@@ -25,26 +25,34 @@ function initializeContentScript(): void {
     void dispatchRuntimeMessage({
       payload: activeNode,
       type: RuntimeMessageType.ActiveNodeChanged,
-    });
+    }).catch(() => undefined);
   });
 
   pageOverlay.onComponentScopeChanged(payload => {
     void dispatchRuntimeMessage({
       payload,
       type: RuntimeMessageType.ComponentScopeChanged,
-    });
+    }).catch(() => undefined);
   });
 
   pageOverlay.onViolationSelected(payload => {
     void dispatchRuntimeMessage({
       payload,
       type: RuntimeMessageType.ViolationSelected,
-    });
+    }).catch(() => undefined);
   });
 
   void sendContentReadyMessage();
 
-  chrome.runtime.onMessage.addListener((message: RuntimeMessage) => {
+  chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
+    if (message.type === RuntimeMessageType.CaptureBoundsRequested) {
+      void pageOverlay.requestCaptureSnapshot(message.payload.mode as CaptureBoundsRequestPayload['mode'])
+        .then(snapshot => sendResponse({ok: true, snapshot}))
+        .catch(error => sendResponse({error: getErrorMessage(error), ok: false}));
+
+      return true;
+    }
+
     if (message.type === RuntimeMessageType.PageContextRequested) {
       void sendContentReadyMessage().catch(error => {
         sendAnalysisFailure(new Error(`Failed to sync page context: ${getErrorMessage(error)}`));

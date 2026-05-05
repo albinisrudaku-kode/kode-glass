@@ -4,8 +4,10 @@ import type {
   AccessibleNodeSummary,
   AuditSettings,
   AuditStandard,
+  CaptureBoundsSnapshot,
   ComponentScope,
   ComponentScopeOption,
+  EvidenceCaptureMode,
   KodeGlassViolation,
   LayerName,
   LayerVisibility,
@@ -15,7 +17,12 @@ import type {
   ViolationFilterSettings,
   ViolationSeverity,
 } from '../../shared/accessibility-report';
-import {RuntimeMessageType, type RuntimeMessage, type ViolationSelectedPayload} from '../../shared/messages';
+import {
+  RuntimeMessageType,
+  type EvidenceImageCaptureResponse,
+  type RuntimeMessage,
+  type ViolationSelectedPayload,
+} from '../../shared/messages';
 import {pickDefaultReaderVoice} from '../../shared/reader-voice';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../../shared/violation-filters';
 
@@ -75,6 +82,13 @@ const initialReaderMode: ReaderModeSettings = {
 };
 
 const sidePanelPortName = 'kode-glass-side-panel';
+const rollbackChunkTimesliceMs = 1000;
+const rollbackMaxWindowMs = 5 * 60 * 1000;
+
+interface VideoRollbackChunk {
+  readonly blob: Blob;
+  readonly recordedAt: number;
+}
 
 @Injectable({providedIn: 'root'})
 export class SidePanelStateService {
@@ -84,9 +98,13 @@ export class SidePanelStateService {
   private sessionTabId: number | undefined;
   private analysisLoadingTimeout: ReturnType<typeof setTimeout> | undefined;
   private detachVoicesChangedListener: (() => void) | undefined;
+  private videoRollbackChunks: VideoRollbackChunk[] = [];
+  private videoRollbackRecorder: MediaRecorder | undefined;
+  private videoRollbackStream: MediaStream | undefined;
   private readonly activeNodeSignal = signal<AccessibleNodeSummary | null>(null);
   private readonly analysisErrorSignal = signal<string | null>(null);
   private readonly analysisLoadingSignal = signal(false);
+  private readonly evidenceCapturePendingSignal = signal(false);
   private readonly auditSettingsSignal = signal<AuditSettings>(initialAuditSettings);
   private readonly layerVisibilitySignal = signal<LayerVisibility>(initialLayerVisibility);
   private readonly pageReportSignal = signal<AccessibilityReport | null>(null);
@@ -99,10 +117,12 @@ export class SidePanelStateService {
   private readonly violationFilterSettingsSignal = signal<ViolationFilterSettings>(initialViolationFilterSettings);
   private readonly voiceOptionsSignal = signal<readonly ReaderVoiceOption[]>([]);
   private readonly violationsSignal = signal<readonly AccessibilityReport['violations'][number][]>([]);
+  private readonly videoBufferEnabledSignal = signal(false);
 
   readonly activeNode = this.activeNodeSignal.asReadonly();
   readonly analysisError = this.analysisErrorSignal.asReadonly();
   readonly analysisLoading = this.analysisLoadingSignal.asReadonly();
+  readonly evidenceCapturePending = this.evidenceCapturePendingSignal.asReadonly();
   readonly auditSettings = this.auditSettingsSignal.asReadonly();
   readonly layerVisibility = this.layerVisibilitySignal.asReadonly();
   readonly pageReport = this.pageReportSignal.asReadonly();
@@ -117,6 +137,7 @@ export class SidePanelStateService {
   readonly violationFilterSettings = this.violationFilterSettingsSignal.asReadonly();
   readonly voiceOptions = this.voiceOptionsSignal.asReadonly();
   readonly violations = this.violationsSignal.asReadonly();
+  readonly videoBufferEnabled = this.videoBufferEnabledSignal.asReadonly();
   readonly availableSeverityCounts = computed(() => this.createSeverityCounts(this.createVisibleViolations({includeSeverityFilter: false})));
   readonly engineStatuses = computed(() => this.pageReport()?.engineStatuses ?? []);
   readonly hasEngineWarnings = computed(() => this.engineStatuses().some(status => status.status !== 'completed'));
@@ -147,6 +168,7 @@ export class SidePanelStateService {
     void this.captureSessionTab().then(() => {
       this.updatePanelPortTab(this.sessionTabId);
       this.announcePanelOpened();
+      this.ensureVideoBufferEnabled(true);
     });
     this.loadVoiceOptions();
     this.connected = true;
@@ -179,6 +201,8 @@ export class SidePanelStateService {
   closePanelSession(): void {
     this.panelClosing = true;
     this.resetAnalysis();
+    this.stopLocalVideoBuffer();
+    this.videoBufferEnabledSignal.set(false);
     this.teardownVoiceOptionsListener();
     this.disconnectPanelPort();
   }
@@ -351,6 +375,114 @@ export class SidePanelStateService {
     });
   }
 
+  async captureEvidenceImage(mode: EvidenceCaptureMode): Promise<void> {
+    if (this.evidenceCapturePending()) {
+      return;
+    }
+
+    this.evidenceCapturePendingSignal.set(true);
+    this.analysisErrorSignal.set(null);
+
+    try {
+      const tabId = await this.getSessionTabId();
+      const response = await chrome.runtime.sendMessage({
+        payload: {mode},
+        tabId,
+        type: RuntimeMessageType.EvidenceImageCaptureRequested,
+      }) as EvidenceImageCaptureResponse;
+
+      if (!response.ok || !response.screenshotDataUrl) {
+        this.analysisErrorSignal.set(response.error ?? 'Unable to capture image evidence.');
+
+        return;
+      }
+
+      const dataUrl = response.snapshot
+        ? await cropScreenshotToBounds(response.screenshotDataUrl, response.snapshot)
+        : response.screenshotDataUrl;
+      await chrome.downloads.download({
+        filename: `${response.fileNameBase ?? `kode-glass-${mode}`}.png`,
+        saveAs: true,
+        url: dataUrl,
+      });
+    } catch (error) {
+      this.analysisErrorSignal.set(`Unable to capture image evidence: ${getErrorMessage(error)}`);
+    } finally {
+      this.evidenceCapturePendingSignal.set(false);
+    }
+  }
+
+  async setVideoBufferEnabled(enabled: boolean, options: {readonly silent?: boolean} = {}): Promise<void> {
+    if (!options.silent) {
+      this.analysisErrorSignal.set(null);
+    }
+
+    try {
+      if (!enabled) {
+        this.stopLocalVideoBuffer();
+        this.videoBufferEnabledSignal.set(false);
+
+        return;
+      }
+
+      const tabId = await this.getSessionTabId();
+
+      if (tabId === undefined) {
+        if (!options.silent) {
+          this.analysisErrorSignal.set('No active tab available for video buffering.');
+        }
+
+        return;
+      }
+
+      await this.startLocalVideoBuffer(tabId);
+      this.videoBufferEnabledSignal.set(true);
+    } catch (error) {
+      if (!options.silent) {
+        this.analysisErrorSignal.set(`Unable to update video buffer: ${getErrorMessage(error)}`);
+      }
+      this.stopLocalVideoBuffer();
+      this.videoBufferEnabledSignal.set(false);
+    }
+  }
+
+  async downloadVideoRollback(minutes: number): Promise<void> {
+    this.analysisErrorSignal.set(null);
+
+    try {
+      if (!this.videoBufferEnabled()) {
+        this.analysisErrorSignal.set('Enable video buffering before exporting rollback clips.');
+
+        return;
+      }
+
+      const cutoff = Date.now() - minutes * 60_000;
+      const chunks = this.videoRollbackChunks.filter(chunk => chunk.recordedAt >= cutoff).map(chunk => chunk.blob);
+
+      if (!chunks.length) {
+        this.analysisErrorSignal.set('No buffered footage available for the selected rollback window.');
+
+        return;
+      }
+
+      const mimeType = this.videoRollbackRecorder?.mimeType || 'video/webm';
+      const blob = new Blob(chunks, {type: mimeType});
+      const objectUrl = URL.createObjectURL(blob);
+
+      try {
+        await chrome.downloads.download({
+          filename: `kode-glass-rollback-${minutes}m-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`,
+          saveAs: true,
+          url: objectUrl,
+        });
+      } finally {
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+      }
+    } catch (error) {
+      this.analysisErrorSignal.set(`Unable to export rollback video: ${getErrorMessage(error)}`);
+    }
+  }
+
   toggleLayer(layerName: LayerName): void {
     const nextLayerVisibility = {
       ...this.layerVisibility(),
@@ -421,6 +553,7 @@ export class SidePanelStateService {
         break;
       case RuntimeMessageType.TabReloaded:
         this.resetLocalState();
+        this.ensureVideoBufferEnabled(true);
         break;
       case RuntimeMessageType.ViolationSelected:
         this.selectedViolationSignal.set(message.payload);
@@ -450,6 +583,7 @@ export class SidePanelStateService {
   private changeSessionTab(tabId: number): void {
     if (this.sessionTabId === tabId) {
       this.announcePanelOpened();
+      this.ensureVideoBufferEnabled(true);
 
       return;
     }
@@ -458,6 +592,7 @@ export class SidePanelStateService {
     this.resetLocalState();
     this.updatePanelPortTab(tabId);
     this.announcePanelOpened();
+    this.ensureVideoBufferEnabled(true);
   }
 
   private resetLocalState(): void {
@@ -472,8 +607,18 @@ export class SidePanelStateService {
     this.selectedComponentScopeSignal.set(null);
     this.selectedViolationSignal.set(null);
     this.violationsSignal.set([]);
+    this.stopLocalVideoBuffer();
+    this.videoBufferEnabledSignal.set(false);
     this.violationFilterSettingsSignal.set(initialViolationFilterSettings);
     this.layerVisibilitySignal.set(initialLayerVisibility);
+  }
+
+  private ensureVideoBufferEnabled(silent: boolean): void {
+    if (this.panelClosing || this.videoBufferEnabled()) {
+      return;
+    }
+
+    void this.setVideoBufferEnabled(true, {silent});
   }
 
   private startAnalysisLoading(): void {
@@ -621,6 +766,68 @@ export class SidePanelStateService {
     this.detachVoicesChangedListener = undefined;
   }
 
+  private async startLocalVideoBuffer(_tabId: number): Promise<void> {
+    if (!chrome.tabCapture?.capture) {
+      throw new Error('Tab capture is not available in this browser context.');
+    }
+
+    this.stopLocalVideoBuffer();
+    const stream = await new Promise<MediaStream>((resolve, reject) => {
+      chrome.tabCapture.capture({
+        audio: false,
+        video: true,
+      }, capturedStream => {
+        if (chrome.runtime.lastError || !capturedStream) {
+          reject(new Error(chrome.runtime.lastError?.message ?? 'Failed to start tab capture.'));
+
+          return;
+        }
+
+        resolve(capturedStream);
+      });
+    });
+    const mimeType = getPreferredVideoMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, {mimeType}) : new MediaRecorder(stream);
+
+    this.videoRollbackChunks = [];
+    this.videoRollbackStream = stream;
+    this.videoRollbackRecorder = recorder;
+    recorder.addEventListener('dataavailable', event => {
+      if (!event.data || event.data.size === 0) {
+        return;
+      }
+
+      this.videoRollbackChunks.push({blob: event.data, recordedAt: Date.now()});
+      this.pruneVideoRollbackChunks();
+    });
+    recorder.addEventListener('stop', () => {
+      stream.getTracks().forEach(track => track.stop());
+    });
+    recorder.start(rollbackChunkTimesliceMs);
+  }
+
+  private stopLocalVideoBuffer(): void {
+    if (this.videoRollbackRecorder && this.videoRollbackRecorder.state !== 'inactive') {
+      this.videoRollbackRecorder.stop();
+    }
+
+    this.videoRollbackStream?.getTracks().forEach(track => track.stop());
+    this.videoRollbackRecorder = undefined;
+    this.videoRollbackStream = undefined;
+    this.videoRollbackChunks = [];
+  }
+
+  private pruneVideoRollbackChunks(): void {
+    const cutoff = Date.now() - rollbackMaxWindowMs;
+    const firstIndexInWindow = this.videoRollbackChunks.findIndex(chunk => chunk.recordedAt >= cutoff);
+
+    if (firstIndexInWindow <= 0) {
+      return;
+    }
+
+    this.videoRollbackChunks.splice(0, firstIndexInWindow);
+  }
+
   private handleRuntimeDeliveryFailure(message: RuntimeMessage, error: unknown): void {
     if (message.type !== RuntimeMessageType.AnalysisRequested) {
       return;
@@ -761,6 +968,47 @@ function getSessionTabIdFromLocation(): number | undefined {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function cropScreenshotToBounds(dataUrl: string, snapshot: CaptureBoundsSnapshot): Promise<string> {
+  const image = await loadImage(dataUrl);
+  const scaleX = image.naturalWidth / snapshot.viewportWidth;
+  const scaleY = image.naturalHeight / snapshot.viewportHeight;
+  const sourceX = Math.max(0, Math.min(image.naturalWidth - 1, Math.round((snapshot.bounds.x - snapshot.scrollX) * scaleX)));
+  const sourceY = Math.max(0, Math.min(image.naturalHeight - 1, Math.round((snapshot.bounds.y - snapshot.scrollY) * scaleY)));
+  const sourceWidth = Math.max(1, Math.min(image.naturalWidth - sourceX, Math.round(snapshot.bounds.width * scaleX)));
+  const sourceHeight = Math.max(1, Math.min(image.naturalHeight - sourceY, Math.round(snapshot.bounds.height * scaleY)));
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    return dataUrl;
+  }
+
+  canvas.width = sourceWidth;
+  canvas.height = sourceHeight;
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, sourceWidth, sourceHeight);
+
+  return canvas.toDataURL('image/png');
+}
+
+async function loadImage(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Unable to load screenshot image for cropping.'));
+    image.src = dataUrl;
+  });
+}
+
+function getPreferredVideoMimeType(): string | undefined {
+  const preferredMimeTypes = [
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+
+  return preferredMimeTypes.find(mimeType => MediaRecorder.isTypeSupported(mimeType));
 }
 
 function formatAuditStandard(standard: AuditStandard): string {

@@ -3,12 +3,13 @@ import {FormsModule} from '@angular/forms';
 import {TuiAppearance, TuiButton, TuiFilterByInputPipe, TuiIcon, TuiLoader, TuiRoot, TuiSlider} from '@taiga-ui/core';
 import {TuiLink} from '@taiga-ui/core/components/link';
 import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiChip, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
-import type {AuditStandard, ComponentScopeOption, LayerName, ViolationEngineFilter, ViolationSeverity} from '../../shared/accessibility-report';
+import type {AuditStandard, ComponentScopeOption, EvidenceCaptureMode, LayerName, ViolationEngineFilter, ViolationSeverity} from '../../shared/accessibility-report';
 import {SidePanelStateService, type PreviewMode, type ViolationGroup} from './side-panel-state.service';
 
 type PanelTab = 'violations' | 'structure' | 'report';
 type Theme = 'light' | 'dark';
 type LayerFilterItem = 'Errors' | 'Landmarks' | 'Focus';
+type RollbackMinutes = 1 | 3 | 5;
 
 interface PanelTabItem {
   readonly id: PanelTab;
@@ -78,6 +79,8 @@ export class AppComponent {
   protected readonly state = inject(SidePanelStateService);
   protected readonly activeTab = signal<PanelTab>('violations');
   protected readonly expandedViolationGroups = signal<ReadonlySet<string>>(new Set());
+  protected readonly evidenceCaptureMode = signal<EvidenceCaptureMode>('full-screen');
+  protected readonly rollbackMinutes = signal<RollbackMinutes>(1);
   protected readonly theme = signal<Theme>(getStoredTheme());
   protected readonly themeIcon = computed(() => this.theme() === 'light' ? '@tui.sun' : '@tui.moon');
   protected readonly themeLabel = computed(() => this.theme() === 'light' ? 'Light' : 'Dark');
@@ -164,6 +167,12 @@ export class AppComponent {
     {id: 'axe', label: 'axe'},
     {id: 'ibm', label: 'IBM'},
   ];
+  protected readonly evidenceCaptureModes: readonly {readonly id: EvidenceCaptureMode; readonly label: string}[] = [
+    {id: 'full-screen', label: 'Full screen'},
+    {id: 'element', label: 'Element'},
+    {id: 'free-select', label: 'Free select'},
+  ];
+  protected readonly rollbackMinuteOptions: readonly RollbackMinutes[] = [1, 3, 5];
   protected readonly pageOrigin = computed(() => {
     const pageUrl = this.state.pageUrl();
 
@@ -382,6 +391,22 @@ export class AppComponent {
 
   protected setInspectInteractionLock(lockInteractions: boolean): void {
     this.state.setInspectInteractionLock(lockInteractions);
+  }
+
+  protected setEvidenceCaptureMode(mode: EvidenceCaptureMode): void {
+    this.evidenceCaptureMode.set(mode);
+  }
+
+  protected async captureEvidenceImage(): Promise<void> {
+    await this.state.captureEvidenceImage(this.evidenceCaptureMode());
+  }
+
+  protected setRollbackMinutes(minutes: RollbackMinutes): void {
+    this.rollbackMinutes.set(minutes);
+  }
+
+  protected downloadRollbackVideo(): void {
+    void this.state.downloadVideoRollback(this.rollbackMinutes());
   }
 
   protected setReaderSpeech(speak: boolean): void {

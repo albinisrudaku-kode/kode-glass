@@ -57,6 +57,17 @@ export interface ElementBounds {
   readonly y: number;
 }
 
+export type EvidenceCaptureMode = 'element' | 'free-select' | 'full-screen';
+
+export interface CaptureBoundsSnapshot {
+  readonly bounds: ElementBounds;
+  readonly devicePixelRatio: number;
+  readonly scrollX: number;
+  readonly scrollY: number;
+  readonly viewportHeight: number;
+  readonly viewportWidth: number;
+}
+
 export interface AccessibleNodeSummary {
   readonly bounds?: ElementBounds;
   readonly componentScope?: ComponentScope;

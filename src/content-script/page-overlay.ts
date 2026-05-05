@@ -2,8 +2,10 @@ import {computeAccessibleDescription, computeAccessibleName, getRole} from 'dom-
 import type {
   AccessibilityReport,
   AccessibleNodeSummary,
+  CaptureBoundsSnapshot,
   ComponentScope,
   ElementBounds,
+  EvidenceCaptureMode,
   KodeGlassViolation,
   LandmarkSummary,
   LayerVisibility,
@@ -120,6 +122,25 @@ export class PageOverlay {
   setSelectedViolationFocus(payload: ViolationSelectedPayload | null): void {
     this.selectedViolationFocus = payload;
     this.queueRender();
+  }
+
+  async requestCaptureSnapshot(mode: Extract<EvidenceCaptureMode, 'element' | 'free-select'>): Promise<CaptureBoundsSnapshot | null> {
+    const bounds = mode === 'element'
+      ? this.getCurrentCaptureTargetBounds()
+      : await this.requestFreeSelectionBounds();
+
+    if (!bounds) {
+      return null;
+    }
+
+    return {
+      bounds,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+    };
   }
 
   reset(): void {
@@ -1184,6 +1205,144 @@ export class PageOverlay {
     this.selectedViolationFocus = payload;
     this.violationSelected(payload);
     this.queueRender();
+  }
+
+  private getCurrentCaptureTargetBounds(): ElementBounds | null {
+    if (this.selectedViolationFocus && this.latestReport) {
+      const selectedViolation = this.latestReport.violations.find(
+        violation =>
+          violation.id === this.selectedViolationFocus?.violationId
+          || violation.selector === this.selectedViolationFocus?.selector,
+      );
+      const selectedBounds = selectedViolation ? this.getCurrentViolationBounds(selectedViolation) : undefined;
+
+      if (selectedBounds) {
+        return selectedBounds;
+      }
+    }
+
+    return this.latestMouseSummary?.bounds ?? this.latestSummary?.bounds ?? null;
+  }
+
+  private async requestFreeSelectionBounds(): Promise<ElementBounds | null> {
+    return new Promise(resolve => {
+      const layer = document.createElement('div');
+      const box = document.createElement('div');
+      let startX = 0;
+      let startY = 0;
+      let latestX = 0;
+      let latestY = 0;
+      let drawing = false;
+      const previousUserSelect = document.body.style.userSelect;
+      const previousCursor = document.body.style.cursor;
+
+      layer.style.position = 'fixed';
+      layer.style.inset = '0';
+      layer.style.zIndex = '2147483646';
+      layer.style.background = 'rgba(2, 6, 23, 0.06)';
+      layer.style.cursor = 'crosshair';
+      layer.style.pointerEvents = 'auto';
+      layer.style.userSelect = 'none';
+      layer.style.touchAction = 'none';
+
+      box.style.position = 'fixed';
+      box.style.border = '2px dashed #526ed3';
+      box.style.background = 'rgba(82, 110, 211, 0.12)';
+      box.style.display = 'none';
+      box.style.pointerEvents = 'none';
+
+      layer.append(box);
+      document.documentElement.append(layer);
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'crosshair';
+
+      const cleanup = (result: ElementBounds | null): void => {
+        layer.removeEventListener('pointerdown', onPointerDown, true);
+        layer.removeEventListener('pointermove', onPointerMove, true);
+        layer.removeEventListener('pointerup', onPointerUp, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        layer.remove();
+        document.body.style.userSelect = previousUserSelect;
+        document.body.style.cursor = previousCursor;
+        resolve(result);
+      };
+
+      const updateBox = (): void => {
+        const left = Math.min(startX, latestX);
+        const top = Math.min(startY, latestY);
+        const width = Math.abs(latestX - startX);
+        const height = Math.abs(latestY - startY);
+
+        box.style.display = 'block';
+        box.style.left = `${left}px`;
+        box.style.top = `${top}px`;
+        box.style.width = `${width}px`;
+        box.style.height = `${height}px`;
+      };
+
+      const onPointerDown = (event: PointerEvent): void => {
+        event.preventDefault();
+        drawing = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        latestX = event.clientX;
+        latestY = event.clientY;
+        updateBox();
+      };
+
+      const onPointerMove = (event: PointerEvent): void => {
+        if (!drawing) {
+          return;
+        }
+
+        event.preventDefault();
+        latestX = event.clientX;
+        latestY = event.clientY;
+        updateBox();
+      };
+
+      const onPointerUp = (event: PointerEvent): void => {
+        if (!drawing) {
+          cleanup(null);
+
+          return;
+        }
+
+        event.preventDefault();
+        drawing = false;
+        latestX = event.clientX;
+        latestY = event.clientY;
+        const left = Math.min(startX, latestX);
+        const top = Math.min(startY, latestY);
+        const width = Math.abs(latestX - startX);
+        const height = Math.abs(latestY - startY);
+
+        if (width < 8 || height < 8) {
+          cleanup(null);
+
+          return;
+        }
+
+        cleanup({
+          height: Math.round(height),
+          width: Math.round(width),
+          x: Math.round(left + window.scrollX),
+          y: Math.round(top + window.scrollY),
+        });
+      };
+
+      const onKeyDown = (event: KeyboardEvent): void => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cleanup(null);
+        }
+      };
+
+      layer.addEventListener('pointerdown', onPointerDown, true);
+      layer.addEventListener('pointermove', onPointerMove, true);
+      layer.addEventListener('pointerup', onPointerUp, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    });
   }
 
 }

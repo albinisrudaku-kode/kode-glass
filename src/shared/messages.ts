@@ -2,8 +2,10 @@ import type {
   AccessibilityReport,
   AccessibleNodeSummary,
   AuditSettings,
+  CaptureBoundsSnapshot,
   ComponentScope,
   ComponentScopeOption,
+  EvidenceCaptureMode,
   LayerVisibility,
   ReaderModeSettings,
   ViolationFilterSettings,
@@ -14,9 +16,13 @@ export const enum RuntimeMessageType {
   ActiveNodeChanged = 'active-node.changed',
   AnalysisFailed = 'analysis.failed',
   AnalysisRequested = 'analysis.requested',
+  CaptureBoundsRequested = 'capture-bounds.requested',
   ComponentInventoryChanged = 'component-inventory.changed',
   ComponentScopeChanged = 'component-scope.changed',
   ContentReady = 'content.ready',
+  EvidenceImageCaptureRequested = 'evidence-image-capture.requested',
+  EvidenceVideoBufferToggled = 'evidence-video-buffer.toggled',
+  EvidenceVideoRollbackRequested = 'evidence-video-rollback.requested',
   LayerVisibilityChanged = 'layer-visibility.changed',
   PageContextRequested = 'page-context.requested',
   PanelOpened = 'side-panel.opened',
@@ -70,6 +76,15 @@ export type AnalysisFailedMessage = MessageEnvelope<
   AnalysisFailedPayload
 >;
 
+export interface CaptureBoundsRequestPayload {
+  readonly mode: Extract<EvidenceCaptureMode, 'element' | 'free-select'>;
+}
+
+export type CaptureBoundsRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.CaptureBoundsRequested,
+  CaptureBoundsRequestPayload
+>;
+
 export type ComponentInventoryChangedMessage = MessageEnvelope<
   RuntimeMessageType.ComponentInventoryChanged,
   readonly ComponentScopeOption[]
@@ -79,6 +94,51 @@ export type ComponentScopeChangedMessage = MessageEnvelope<
   RuntimeMessageType.ComponentScopeChanged,
   ComponentScope | null
 >;
+
+export interface EvidenceImageCaptureRequestPayload {
+  readonly mode: EvidenceCaptureMode;
+}
+
+export type EvidenceImageCaptureRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.EvidenceImageCaptureRequested,
+  EvidenceImageCaptureRequestPayload
+>;
+
+export interface EvidenceImageCaptureResponse {
+  readonly error?: string;
+  readonly fileNameBase?: string;
+  readonly ok: boolean;
+  readonly screenshotDataUrl?: string;
+  readonly snapshot?: CaptureBoundsSnapshot;
+}
+
+export interface EvidenceVideoBufferTogglePayload {
+  readonly enabled: boolean;
+}
+
+export type EvidenceVideoBufferToggledMessage = MessageEnvelope<
+  RuntimeMessageType.EvidenceVideoBufferToggled,
+  EvidenceVideoBufferTogglePayload
+>;
+
+export interface EvidenceVideoBufferToggleResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+}
+
+export interface EvidenceVideoRollbackRequestPayload {
+  readonly minutes: number;
+}
+
+export type EvidenceVideoRollbackRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.EvidenceVideoRollbackRequested,
+  EvidenceVideoRollbackRequestPayload
+>;
+
+export interface EvidenceVideoRollbackResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+}
 
 export type ActiveNodeChangedMessage = MessageEnvelope<
   RuntimeMessageType.ActiveNodeChanged,
@@ -160,9 +220,13 @@ export type RuntimeMessage =
   | ActiveTabChangedMessage
   | AnalysisFailedMessage
   | AnalysisRequestedMessage
+  | CaptureBoundsRequestedMessage
   | ComponentInventoryChangedMessage
   | ComponentScopeChangedMessage
   | ContentReadyMessage
+  | EvidenceImageCaptureRequestedMessage
+  | EvidenceVideoBufferToggledMessage
+  | EvidenceVideoRollbackRequestedMessage
   | LayerVisibilityChangedMessage
   | PageContextRequestedMessage
   | PanelOpenedMessage

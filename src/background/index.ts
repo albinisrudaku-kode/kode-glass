@@ -1,32 +1,84 @@
-import {RuntimeMessageType, type ReaderSpeakPayload, type RuntimeMessage} from '../shared/messages';
+import {
+  RuntimeMessageType,
+  type EvidenceImageCaptureRequestedMessage,
+  type EvidenceImageCaptureResponse,
+  type EvidenceVideoBufferToggledMessage,
+  type EvidenceVideoBufferToggleResponse,
+  type EvidenceVideoRollbackRequestedMessage,
+  type EvidenceVideoRollbackResponse,
+  type ReaderSpeakPayload,
+  type ReportGeneratedMessage,
+  type RuntimeMessage,
+} from '../shared/messages';
+import type {CaptureBoundsSnapshot} from '../shared/accessibility-report';
 
 const latestMessagesByTab = new Map<number, RuntimeMessage>();
+const latestReportsByTab = new Map<number, ReportGeneratedMessage>();
 const analyzerInjectedTabs = new Set<number>();
+const videoBuffersByTab = new Map<number, TabVideoBufferState>();
 let activeTabId: number | undefined;
 const sidePanelPath = 'side-panel.html';
 const sidePanelPortName = 'kode-glass-side-panel';
+const videoChunkTimesliceMs = 1000;
+const maxRollbackWindowMs = 5 * 60 * 1000;
 
-chrome.runtime.onInstalled.addListener(() => {
-  void chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: false});
-  void enableSidePanelForOpenTabs();
-});
+interface TabVideoBufferState {
+  readonly chunks: Array<{readonly blob: Blob; readonly recordedAt: number}>;
+  readonly mimeType: string;
+  readonly recorder: MediaRecorder;
+  readonly stream: MediaStream;
+}
 
-chrome.runtime.onStartup.addListener(() => {
-  void enableSidePanelForOpenTabs();
-});
+const extensionApi = globalThis.chrome;
 
-chrome.action.onClicked.addListener(tab => {
-  if (tab.id === undefined) {
-    return;
+if (!extensionApi?.runtime || !extensionApi?.tabs) {
+  console.warn('Kode Glass background: extension APIs unavailable.');
+} else {
+  extensionApi.runtime.onInstalled?.addListener(() => {
+    void extensionApi.sidePanel?.setPanelBehavior({openPanelOnActionClick: false});
+    void enableSidePanelForOpenTabs();
+  });
+
+  extensionApi.runtime.onStartup?.addListener(() => {
+    void enableSidePanelForOpenTabs();
+  });
+
+  extensionApi.action?.onClicked.addListener(tab => {
+    if (tab.id === undefined) {
+      return;
+    }
+
+    activeTabId = tab.id;
+    void enableSidePanelForTab(tab.id);
+    void ensureContentScript(tab.id);
+    void extensionApi.sidePanel?.open({tabId: tab.id});
+  });
+
+  extensionApi.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (message.type === RuntimeMessageType.EvidenceImageCaptureRequested) {
+    void captureEvidenceImage(message)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false} satisfies EvidenceImageCaptureResponse));
+
+    return true;
   }
 
-  activeTabId = tab.id;
-  void enableSidePanelForTab(tab.id);
-  void ensureContentScript(tab.id);
-  void chrome.sidePanel.open({tabId: tab.id});
-});
+  if (message.type === RuntimeMessageType.EvidenceVideoBufferToggled) {
+    void toggleVideoBuffer(message)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false} satisfies EvidenceVideoBufferToggleResponse));
 
-chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.EvidenceVideoRollbackRequested) {
+    void downloadRollbackVideo(message)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false} satisfies EvidenceVideoRollbackResponse));
+
+    return true;
+  }
+
   const tabId = sender.tab?.id;
   const messageForPanel = tabId === undefined ? message : {...message, tabId};
 
@@ -57,6 +109,14 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
     tabId !== undefined
     && message.type !== RuntimeMessageType.ActiveNodeChanged
   ) {
+    if (message.type === RuntimeMessageType.ReportGenerated) {
+      latestReportsByTab.set(tabId, messageForPanel as ReportGeneratedMessage);
+    }
+
+    if (message.type === RuntimeMessageType.ResetCompleted) {
+      latestReportsByTab.delete(tabId);
+    }
+
     rememberLatestTabMessage(tabId, messageForPanel);
   }
 
@@ -78,9 +138,9 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
   void sendRuntimeMessage(messageForPanel);
 
   return false;
-});
+  });
 
-chrome.runtime.onConnect.addListener(port => {
+  extensionApi.runtime.onConnect.addListener(port => {
   if (port.name !== sidePanelPortName) {
     return;
   }
@@ -96,24 +156,28 @@ chrome.runtime.onConnect.addListener(port => {
       return;
     }
 
+    void stopVideoBuffer(connectedTabId);
     latestMessagesByTab.delete(connectedTabId);
+    latestReportsByTab.delete(connectedTabId);
     void sendTabMessage(connectedTabId, {
       payload: {},
       tabId: connectedTabId,
       type: RuntimeMessageType.ResetRequested,
     });
   });
-});
+  });
 
-chrome.tabs.onActivated.addListener(({tabId}) => {
-  activeTabId = tabId;
-  void activateSidePanelTab(tabId);
-});
+  extensionApi.tabs.onActivated.addListener(({tabId}) => {
+    activeTabId = tabId;
+    void activateSidePanelTab(tabId);
+  });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  extensionApi.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (isMeaningfulNavigationUpdate(changeInfo)) {
+    void stopVideoBuffer(tabId);
     analyzerInjectedTabs.delete(tabId);
     latestMessagesByTab.delete(tabId);
+    latestReportsByTab.delete(tabId);
   }
 
   if (changeInfo.status === 'loading' || changeInfo.url !== undefined) {
@@ -125,7 +189,15 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 
   void enableSidePanelForTab(tabId);
-});
+  });
+
+  extensionApi.tabs.onRemoved.addListener(tabId => {
+    void stopVideoBuffer(tabId);
+    analyzerInjectedTabs.delete(tabId);
+    latestMessagesByTab.delete(tabId);
+    latestReportsByTab.delete(tabId);
+  });
+}
 
 async function forwardToTargetTab(message: RuntimeMessage): Promise<void> {
   if (message.tabId !== undefined) {
@@ -198,8 +270,13 @@ async function hydratePanelForTab(tabId: number | undefined): Promise<void> {
   await ensureContentScript(tabId);
 
   const latestMessage = latestMessagesByTab.get(tabId);
+  const latestReport = latestReportsByTab.get(tabId);
 
-  if (latestMessage) {
+  if (latestReport) {
+    await sendRuntimeMessage(latestReport);
+  }
+
+  if (latestMessage && latestMessage.type !== RuntimeMessageType.ReportGenerated) {
     await sendRuntimeMessage(latestMessage);
   }
 
@@ -269,6 +346,201 @@ async function canReachContentScript(tabId: number): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function captureEvidenceImage(
+  message: EvidenceImageCaptureRequestedMessage,
+): Promise<EvidenceImageCaptureResponse> {
+  const tabId = message.tabId ?? activeTabId;
+
+  if (tabId === undefined) {
+    return {error: 'No active tab available for capture.', ok: false};
+  }
+
+  if (!await ensureContentScript(tabId)) {
+    return {error: 'Unable to access this tab for capture.', ok: false};
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  const windowId = tab.windowId;
+  const snapshot = message.payload.mode === 'full-screen'
+    ? undefined
+    : await requestCaptureBoundsFromTab(tabId, message.payload.mode);
+
+  if (message.payload.mode !== 'full-screen' && !snapshot) {
+    return {error: 'No target selected for image capture.', ok: false};
+  }
+
+  const screenshotDataUrl = await chrome.tabs.captureVisibleTab(windowId, {format: 'png'});
+
+  return {
+    fileNameBase: buildEvidenceFileNameBase(message.payload.mode),
+    ok: true,
+    screenshotDataUrl,
+    snapshot,
+  };
+}
+
+async function requestCaptureBoundsFromTab(
+  tabId: number,
+  mode: 'element' | 'free-select',
+): Promise<CaptureBoundsSnapshot | undefined> {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      payload: {mode},
+      tabId,
+      type: RuntimeMessageType.CaptureBoundsRequested,
+    }) as {readonly ok: boolean; readonly snapshot?: CaptureBoundsSnapshot};
+
+    return response.ok ? response.snapshot : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function toggleVideoBuffer(
+  message: EvidenceVideoBufferToggledMessage,
+): Promise<EvidenceVideoBufferToggleResponse> {
+  const tabId = message.tabId ?? activeTabId;
+
+  if (tabId === undefined) {
+    return {error: 'No active tab available for video buffering.', ok: false};
+  }
+
+  if (!message.payload.enabled) {
+    await stopVideoBuffer(tabId);
+
+    return {ok: true};
+  }
+
+  try {
+    await startVideoBuffer(tabId);
+
+    return {ok: true};
+  } catch (error) {
+    await stopVideoBuffer(tabId);
+
+    return {error: getErrorMessage(error), ok: false};
+  }
+}
+
+async function downloadRollbackVideo(
+  message: EvidenceVideoRollbackRequestedMessage,
+): Promise<EvidenceVideoRollbackResponse> {
+  const tabId = message.tabId ?? activeTabId;
+
+  if (tabId === undefined) {
+    return {error: 'No active tab available for rollback export.', ok: false};
+  }
+
+  const state = videoBuffersByTab.get(tabId);
+
+  if (!state) {
+    return {error: 'Video buffer is not running for this tab.', ok: false};
+  }
+
+  const cutoff = Date.now() - message.payload.minutes * 60_000;
+  const selectedChunks = state.chunks.filter(chunk => chunk.recordedAt >= cutoff).map(chunk => chunk.blob);
+
+  if (!selectedChunks.length) {
+    return {error: 'No buffered footage available for the selected rollback window.', ok: false};
+  }
+
+  const blob = new Blob(selectedChunks, {type: state.mimeType});
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    const filename = `${buildEvidenceFileNameBase('rollback')}-${message.payload.minutes}m.webm`;
+    await chrome.downloads.download({filename, saveAs: true, url: objectUrl});
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+  }
+
+  return {ok: true};
+}
+
+async function startVideoBuffer(tabId: number): Promise<void> {
+  await stopVideoBuffer(tabId);
+
+  const stream = await new Promise<MediaStream>((resolve, reject) => {
+    chrome.tabCapture.capture({audio: false, video: true}, capturedStream => {
+      if (chrome.runtime.lastError || !capturedStream) {
+        reject(new Error(chrome.runtime.lastError?.message ?? 'Failed to start tab capture.'));
+
+        return;
+      }
+
+      resolve(capturedStream);
+    });
+  });
+
+  const mimeType = getPreferredRecorderMimeType();
+  const recorder = mimeType ? new MediaRecorder(stream, {mimeType}) : new MediaRecorder(stream);
+  const state: TabVideoBufferState = {
+    chunks: [],
+    mimeType: mimeType || recorder.mimeType || 'video/webm',
+    recorder,
+    stream,
+  };
+
+  recorder.addEventListener('dataavailable', event => {
+    if (!event.data || event.data.size === 0) {
+      return;
+    }
+
+    state.chunks.push({blob: event.data, recordedAt: Date.now()});
+    pruneVideoChunks(state);
+  });
+
+  recorder.addEventListener('stop', () => {
+    stream.getTracks().forEach(track => track.stop());
+  });
+
+  recorder.start(videoChunkTimesliceMs);
+  videoBuffersByTab.set(tabId, state);
+}
+
+async function stopVideoBuffer(tabId: number): Promise<void> {
+  const state = videoBuffersByTab.get(tabId);
+
+  if (!state) {
+    return;
+  }
+
+  videoBuffersByTab.delete(tabId);
+
+  if (state.recorder.state !== 'inactive') {
+    state.recorder.stop();
+  }
+
+  state.stream.getTracks().forEach(track => track.stop());
+}
+
+function pruneVideoChunks(state: TabVideoBufferState): void {
+  const cutoff = Date.now() - maxRollbackWindowMs;
+  const firstIndexInWindow = state.chunks.findIndex(chunk => chunk.recordedAt >= cutoff);
+
+  if (firstIndexInWindow <= 0) {
+    return;
+  }
+
+  state.chunks.splice(0, firstIndexInWindow);
+}
+
+function getPreferredRecorderMimeType(): string | undefined {
+  const preferredMimeTypes = [
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+
+  return preferredMimeTypes.find(mimeType => MediaRecorder.isTypeSupported(mimeType));
+}
+
+function buildEvidenceFileNameBase(mode: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+  return `kode-glass-${mode}-${timestamp}`;
 }
 
 function notifyPanelAnalysisFailure(tabId: number, message: string): void {
@@ -356,6 +628,10 @@ function resolveChromeTtsVoiceName(
   );
 
   return googleUs?.voiceName;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function rememberLatestTabMessage(tabId: number, message: RuntimeMessage): void {

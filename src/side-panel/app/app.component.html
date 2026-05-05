@@ -168,6 +168,50 @@
             </label>
           }
         </div>
+
+        <div class="tool-group" aria-label="Evidence capture">
+          <div class="filter-group">
+            <span class="eyebrow">Evidence</span>
+            <div class="engine-filter-row" tuiAppearance="secondary" tuiButtonGroup aria-label="Image capture mode">
+              @for (mode of evidenceCaptureModes; track mode.id) {
+                <button
+                  type="button"
+                  [class.active]="evidenceCaptureMode() === mode.id"
+                  [attr.aria-pressed]="evidenceCaptureMode() === mode.id"
+                  (click)="setEvidenceCaptureMode(mode.id)"
+                >
+                  {{ mode.label }}
+                </button>
+              }
+            </div>
+          </div>
+
+          <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.evidenceCapturePending()" (click)="captureEvidenceImage()">
+            Capture image
+          </button>
+
+          @if (state.videoBufferEnabled()) {
+            <div class="filter-group">
+              <span class="eyebrow">Window</span>
+              <div class="engine-filter-row" tuiAppearance="secondary" tuiButtonGroup aria-label="Rollback duration">
+                @for (minutes of rollbackMinuteOptions; track minutes) {
+                  <button
+                    type="button"
+                    [class.active]="rollbackMinutes() === minutes"
+                    [attr.aria-pressed]="rollbackMinutes() === minutes"
+                    (click)="setRollbackMinutes(minutes)"
+                  >
+                    {{ minutes }}m
+                  </button>
+                }
+              </div>
+            </div>
+
+            <button appearance="secondary" size="s" tuiButton type="button" (click)="downloadRollbackVideo()">
+              Download rollback
+            </button>
+          }
+        </div>
       }
     </section>
 
