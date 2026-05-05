@@ -3,8 +3,8 @@ import {FormsModule} from '@angular/forms';
 import {TuiAppearance, TuiButton, TuiFilterByInputPipe, TuiIcon, TuiLoader, TuiRoot, TuiSlider} from '@taiga-ui/core';
 import {TuiLink} from '@taiga-ui/core/components/link';
 import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiChip, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
-import type {AuditStandard, LayerName, ViolationEngineFilter, ViolationSeverity} from '../../shared/accessibility-report';
-import {SidePanelStateService, type PreviewMode} from './side-panel-state.service';
+import type {AuditStandard, ComponentScopeOption, LayerName, ViolationEngineFilter, ViolationSeverity} from '../../shared/accessibility-report';
+import {SidePanelStateService, type PreviewMode, type ViolationGroup} from './side-panel-state.service';
 
 type PanelTab = 'violations' | 'structure' | 'report';
 type Theme = 'light' | 'dark';
@@ -28,6 +28,11 @@ interface SeverityFilterItem {
 interface ViolationEngineFilterItem {
   readonly id: ViolationEngineFilter;
   readonly label: string;
+}
+
+interface ComponentScopeSelectItem {
+  readonly label: string;
+  readonly scope: ComponentScopeOption;
 }
 
 const layerFilterSelections: Record<string, readonly LayerFilterItem[]> = {
@@ -69,6 +74,7 @@ const layerFilterSelections: Record<string, readonly LayerFilterItem[]> = {
 })
 export class AppComponent {
   private readonly destroyRef = inject(DestroyRef);
+  private lastFocusedViolationId: string | null = null;
   protected readonly state = inject(SidePanelStateService);
   protected readonly activeTab = signal<PanelTab>('violations');
   protected readonly expandedViolationGroups = signal<ReadonlySet<string>>(new Set());
@@ -97,6 +103,45 @@ export class AppComponent {
     const voiceURI = this.state.readerMode().voiceURI;
 
     return voiceURI ? this.state.voiceOptions().find(voice => voice.voiceURI === voiceURI)?.label ?? 'System default' : 'System default';
+  });
+  protected readonly componentScopeItems = computed<readonly ComponentScopeSelectItem[]>(() => {
+    const violationCountByTagName = this.state.violations().reduce((counts, violation) => {
+      const tagName = violation.componentScope?.tagName;
+
+      if (!tagName) {
+        return counts;
+      }
+
+      counts.set(tagName, (counts.get(tagName) ?? 0) + 1);
+
+      return counts;
+    }, new Map<string, number>());
+    const selectedScopeTagName = this.state.selectedComponentScope()?.tagName;
+
+    return this.state.componentInventory()
+      .filter(scope => !isExcludedComponentTag(scope.tagName))
+      .map(scope => ({
+        count: violationCountByTagName.get(scope.tagName) ?? 0,
+        scope,
+      }))
+      .filter(item => item.count > 0 || item.scope.tagName === selectedScopeTagName)
+      .sort((first, second) => second.count - first.count || first.scope.label.localeCompare(second.scope.label))
+      .map(item => ({
+        label: `${item.scope.label} (${item.count})`,
+        scope: item.scope,
+      }));
+  });
+  protected readonly componentScopeOptions = computed(() => ['All components', ...this.componentScopeItems().map(item => item.label)]);
+  protected readonly selectedComponentScopeLabel = computed(() => {
+    const selectedScope = this.state.selectedComponentScope();
+
+    if (!selectedScope) {
+      return 'All components';
+    }
+
+    const matchedItem = this.componentScopeItems().find(item => item.scope.tagName === selectedScope.tagName);
+
+    return matchedItem?.label ?? `${selectedScope.label} (0)`;
   });
   protected readonly tabs: readonly PanelTabItem[] = [
     {id: 'violations', label: 'Violations'},
@@ -139,9 +184,44 @@ export class AppComponent {
     });
 
     effect(() => {
-      if (this.state.selectedViolation()) {
+      if (this.state.selectedComponentScope() || this.state.selectedViolation()) {
         this.activeTab.set('violations');
+        this.scrollToViolations();
       }
+    });
+
+    effect(() => {
+      const selectedViolation = this.state.selectedViolation();
+
+      if (!selectedViolation) {
+        if (this.lastFocusedViolationId) {
+          const lastFocusedViolationId = this.lastFocusedViolationId;
+          const lastFocusedGroup = this.state.violationGroups().find(group => group.violationIds.includes(lastFocusedViolationId));
+
+          if (lastFocusedGroup) {
+            this.expandedViolationGroups.update(expandedGroups => {
+              const nextExpandedGroups = new Set(expandedGroups);
+              nextExpandedGroups.delete(lastFocusedGroup.id);
+
+              return nextExpandedGroups;
+            });
+          }
+        }
+
+        this.lastFocusedViolationId = null;
+
+        return;
+      }
+
+      const matchingGroup = this.state.violationGroups().find(group => group.violationIds.includes(selectedViolation.violationId));
+
+      this.lastFocusedViolationId = selectedViolation.violationId;
+
+      if (!matchingGroup) {
+        return;
+      }
+
+      this.expandedViolationGroups.update(expandedGroups => new Set([...expandedGroups, matchingGroup.id]));
     });
   }
 
@@ -159,8 +239,30 @@ export class AppComponent {
     this.state.setAuditStandard(standard);
   }
 
+  protected clearSelectedComponentScope(): void {
+    this.state.clearSelectedComponentScope();
+  }
+
   protected clearSelectedViolation(): void {
     this.state.clearSelectedViolation();
+  }
+
+  protected setComponentScopeLabel(label: string | null): void {
+    if (!label || label === 'All components') {
+      this.state.clearSelectedComponentScope();
+
+      return;
+    }
+
+    const componentScope = this.componentScopeItems().find(item => item.label === label)?.scope;
+
+    if (!componentScope) {
+      this.state.clearSelectedComponentScope();
+
+      return;
+    }
+
+    this.state.setSelectedComponentScope(componentScope);
   }
 
   protected toggleSeverityFilter(severity: ViolationSeverity): void {
@@ -187,6 +289,35 @@ export class AppComponent {
 
       return nextExpandedGroups;
     });
+  }
+
+  protected onViolationGroupHeaderClick(group: ViolationGroup): void {
+    const isExpanded = this.isViolationGroupExpanded(group.id);
+
+    this.toggleViolationGroup(group.id);
+
+    if (isExpanded) {
+      const selectedViolation = this.state.selectedViolation();
+
+      if (selectedViolation && group.violationIds.includes(selectedViolation.violationId)) {
+        this.clearSelectedViolation();
+      }
+
+      return;
+    }
+
+    this.selectViolationGroup(group);
+  }
+
+  protected selectViolationGroup(group: ViolationGroup): void {
+    const violationId = group.violationIds[0];
+    const selector = group.selectors[0];
+
+    if (!violationId || !selector) {
+      return;
+    }
+
+    this.state.setSelectedViolation({selector, violationId});
   }
 
   protected toggleReaderMode(): void {
@@ -292,6 +423,23 @@ export class AppComponent {
   private readonly closePanelSession = (): void => {
     this.state.closePanelSession();
   };
+
+  private scrollToViolations(): void {
+    requestAnimationFrame(() => {
+      const violationsAnchor = document.querySelector<HTMLElement>('[data-violations-anchor]');
+      violationsAnchor?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    });
+  }
+}
+
+function isExcludedComponentTag(tagName: string): boolean {
+  const normalizedTagName = tagName.toLowerCase();
+
+  return normalizedTagName === 'router-outlet'
+    || normalizedTagName.startsWith('kode-glass-')
+    || normalizedTagName.startsWith('tui-')
+    || normalizedTagName.startsWith('cdk-')
+    || normalizedTagName.startsWith('ng-');
 }
 
 function getFormValue(event: Event): string {

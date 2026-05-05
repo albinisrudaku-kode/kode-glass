@@ -2,6 +2,7 @@ import {RuntimeMessageType, type ContentReadyMessage, type RuntimeMessage} from 
 import type {AuditSettings} from '../shared/accessibility-report';
 import {PageOverlay} from './page-overlay';
 import type {analyzeCurrentPage} from '../shared/engines/accessibility-engine';
+import {collectDetectedComponentOptions, enrichViolationsWithComponentScope} from './component-scope';
 
 type AnalyzeCurrentPage = typeof analyzeCurrentPage;
 
@@ -24,6 +25,13 @@ function initializeContentScript(): void {
     void dispatchRuntimeMessage({
       payload: activeNode,
       type: RuntimeMessageType.ActiveNodeChanged,
+    });
+  });
+
+  pageOverlay.onComponentScopeChanged(payload => {
+    void dispatchRuntimeMessage({
+      payload,
+      type: RuntimeMessageType.ComponentScopeChanged,
     });
   });
 
@@ -59,6 +67,14 @@ function initializeContentScript(): void {
       pageOverlay.setViolationFilters(message.payload);
     }
 
+    if (message.type === RuntimeMessageType.ComponentScopeChanged) {
+      pageOverlay.setComponentScope(message.payload);
+    }
+
+    if (message.type === RuntimeMessageType.ViolationFocusChanged) {
+      pageOverlay.setSelectedViolationFocus(message.payload);
+    }
+
     if (message.type === RuntimeMessageType.ResetRequested) {
       pageOverlay.reset();
 
@@ -75,13 +91,23 @@ function initializeContentScript(): void {
 async function runAnalysis(pageOverlay: PageOverlay, auditSettings: AuditSettings): Promise<void> {
   await sendContentReadyMessage();
 
-  const report = await getAnalyzeCurrentPage()(auditSettings);
+  const rawReport = await getAnalyzeCurrentPage()(auditSettings);
+  const report = {
+    ...rawReport,
+    violations: enrichViolationsWithComponentScope(rawReport.violations),
+  };
+  const componentInventory = collectDetectedComponentOptions();
 
   pageOverlay.setReport(report);
 
   await dispatchRuntimeMessage({
     payload: report,
     type: RuntimeMessageType.ReportGenerated,
+  });
+
+  await dispatchRuntimeMessage({
+    payload: componentInventory,
+    type: RuntimeMessageType.ComponentInventoryChanged,
   });
 }
 

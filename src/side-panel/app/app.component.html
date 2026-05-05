@@ -67,6 +67,7 @@
           @if (activeNode.description) {
             <span class="node-description">{{ activeNode.description }}</span>
           }
+          <span class="node-description">Component: {{ activeNode.componentScope?.label ?? 'Unknown component' }}</span>
         </div>
         <span class="node-role" tuiBadge size="s" appearance="positive">{{ activeNode.role }}</span>
         @if (activeNode.state.length) {
@@ -216,9 +217,9 @@
         @case ('violations') {
           @if (state.hasViolations()) {
             @if (state.selectedViolation(); as selectedViolation) {
-              <section class="focus-filter" aria-label="Filtered overlay selection">
+              <section class="focus-filter" aria-label="Filtered violation">
                 <div>
-                  <strong class="eyebrow">Overlay selection</strong>
+                  <strong class="eyebrow">Violation focus</strong>
                   <span title="{{ selectedViolation.selector }}">{{ selectedViolation.selector }}</span>
                 </div>
 
@@ -226,7 +227,31 @@
               </section>
             }
 
-            <section class="violation-filters" aria-label="Violation filters">
+            @if (state.selectedComponentScope(); as selectedComponentScope) {
+              <section class="focus-filter" aria-label="Filtered component scope">
+                <div>
+                  <strong class="eyebrow">Component scope</strong>
+                  <span title="{{ selectedComponentScope.selector }}">{{ selectedComponentScope.label }}</span>
+                </div>
+
+                <button type="button" tuiButton size="s" appearance="outline" (click)="clearSelectedComponentScope()">Show all</button>
+              </section>
+            }
+
+            <section class="violation-filters" aria-label="Violation filters" data-violations-anchor>
+              <div class="filter-group">
+                <span class="eyebrow">Component</span>
+                <tui-textfield tuiChevron tuiTextfieldSize="s" [tuiTextfieldCleaner]="false">
+                  <input
+                    placeholder="All components"
+                    tuiComboBox
+                    [ngModel]="selectedComponentScopeLabel()"
+                    (ngModelChange)="setComponentScopeLabel($event)"
+                  />
+                  <tui-data-list-wrapper *tuiDropdown size="s" [items]="componentScopeOptions() | tuiFilterByInput" />
+                </tui-textfield>
+              </div>
+
               <div class="filter-group">
                 <span class="eyebrow">Severity</span>
                 <div class="severity-row" aria-label="Issue severity filters">
@@ -274,7 +299,7 @@
                       type="button"
                       [attr.aria-controls]="'violation-panel-' + group.id"
                       [attr.aria-expanded]="isViolationGroupExpanded(group.id)"
-                      (click)="toggleViolationGroup(group.id)"
+                      (click)="onViolationGroupHeaderClick(group)"
                     >
                       <div class="finding-main">
                         <span

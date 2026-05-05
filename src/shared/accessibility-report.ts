@@ -26,6 +26,16 @@ export interface ViolationFilterSettings {
   readonly severity: SeverityVisibility;
 }
 
+export interface ComponentScope {
+  readonly label: string;
+  readonly selector: string;
+  readonly tagName: string;
+}
+
+export interface ComponentScopeOption extends ComponentScope {
+  readonly id: string;
+}
+
 export interface AuditSettings {
   readonly standard: AuditStandard;
 }
@@ -48,6 +58,7 @@ export interface ElementBounds {
 
 export interface AccessibleNodeSummary {
   readonly bounds?: ElementBounds;
+  readonly componentScope?: ComponentScope;
   readonly description: string;
   readonly name: string;
   readonly role: string;
@@ -57,6 +68,7 @@ export interface AccessibleNodeSummary {
 
 export interface KodeGlassViolation {
   readonly bounds?: ElementBounds;
+  readonly componentScope?: ComponentScope;
   readonly description?: string;
   readonly engine: AccessibilityEngine;
   readonly guidance?: string;

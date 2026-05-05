@@ -2,6 +2,8 @@ import type {
   AccessibilityReport,
   AccessibleNodeSummary,
   AuditSettings,
+  ComponentScope,
+  ComponentScopeOption,
   LayerVisibility,
   ReaderModeSettings,
   ViolationFilterSettings,
@@ -12,6 +14,8 @@ export const enum RuntimeMessageType {
   ActiveNodeChanged = 'active-node.changed',
   AnalysisFailed = 'analysis.failed',
   AnalysisRequested = 'analysis.requested',
+  ComponentInventoryChanged = 'component-inventory.changed',
+  ComponentScopeChanged = 'component-scope.changed',
   ContentReady = 'content.ready',
   LayerVisibilityChanged = 'layer-visibility.changed',
   PageContextRequested = 'page-context.requested',
@@ -22,6 +26,7 @@ export const enum RuntimeMessageType {
   ResetRequested = 'analysis.reset-requested',
   ResetCompleted = 'analysis.reset-completed',
   TabReloaded = 'tab.reloaded',
+  ViolationFocusChanged = 'violation-focus.changed',
   ViolationFiltersChanged = 'violation-filters.changed',
   ViolationSelected = 'violation.selected'
 }
@@ -63,6 +68,16 @@ export interface AnalysisFailedPayload {
 export type AnalysisFailedMessage = MessageEnvelope<
   RuntimeMessageType.AnalysisFailed,
   AnalysisFailedPayload
+>;
+
+export type ComponentInventoryChangedMessage = MessageEnvelope<
+  RuntimeMessageType.ComponentInventoryChanged,
+  readonly ComponentScopeOption[]
+>;
+
+export type ComponentScopeChangedMessage = MessageEnvelope<
+  RuntimeMessageType.ComponentScopeChanged,
+  ComponentScope | null
 >;
 
 export type ActiveNodeChangedMessage = MessageEnvelope<
@@ -112,7 +127,12 @@ export interface ViolationSelectedPayload {
 
 export type ViolationSelectedMessage = MessageEnvelope<
   RuntimeMessageType.ViolationSelected,
-  ViolationSelectedPayload
+  ViolationSelectedPayload | null
+>;
+
+export type ViolationFocusChangedMessage = MessageEnvelope<
+  RuntimeMessageType.ViolationFocusChanged,
+  ViolationSelectedPayload | null
 >;
 
 export type ViolationFiltersChangedMessage = MessageEnvelope<
@@ -140,6 +160,8 @@ export type RuntimeMessage =
   | ActiveTabChangedMessage
   | AnalysisFailedMessage
   | AnalysisRequestedMessage
+  | ComponentInventoryChangedMessage
+  | ComponentScopeChangedMessage
   | ContentReadyMessage
   | LayerVisibilityChangedMessage
   | PageContextRequestedMessage
@@ -150,5 +172,6 @@ export type RuntimeMessage =
   | ResetCompletedMessage
   | ResetRequestedMessage
   | TabReloadedMessage
+  | ViolationFocusChangedMessage
   | ViolationFiltersChangedMessage
   | ViolationSelectedMessage;

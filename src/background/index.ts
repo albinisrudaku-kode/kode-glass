@@ -62,10 +62,12 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender) => {
 
   if (
     message.type === RuntimeMessageType.AnalysisRequested
+    || message.type === RuntimeMessageType.ComponentScopeChanged
     || message.type === RuntimeMessageType.LayerVisibilityChanged
     || message.type === RuntimeMessageType.PageContextRequested
     || message.type === RuntimeMessageType.ReaderModeChanged
     || message.type === RuntimeMessageType.ResetRequested
+    || message.type === RuntimeMessageType.ViolationFocusChanged
     || message.type === RuntimeMessageType.ViolationFiltersChanged
   ) {
     void forwardToTargetTab(message);

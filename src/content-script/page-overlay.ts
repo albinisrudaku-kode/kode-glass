@@ -2,6 +2,7 @@ import {computeAccessibleDescription, computeAccessibleName, getRole} from 'dom-
 import type {
   AccessibilityReport,
   AccessibleNodeSummary,
+  ComponentScope,
   ElementBounds,
   KodeGlassViolation,
   LandmarkSummary,
@@ -13,6 +14,7 @@ import {RuntimeMessageType} from '../shared/messages';
 import {getElementBounds, getElementSelector} from '../shared/engines/dom-summary';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../shared/violation-filters';
 import type {ViolationSelectedPayload} from '../shared/messages';
+import {resolveComponentScopeForElement} from './component-scope';
 
 interface FocusPathPoint {
   readonly bounds?: ElementBounds;
@@ -27,6 +29,7 @@ interface OverlayBoxOptions {
   readonly dashArray?: string;
   readonly fill: string;
   readonly label: string;
+  readonly selected?: boolean;
   readonly violation?: KodeGlassViolation;
 }
 
@@ -73,6 +76,8 @@ export class PageOverlay {
   private observingMutations = false;
   private violationFilters: ViolationFilterSettings = initialViolationFilterSettings;
   private readerMode: ReaderModeSettings = initialReaderMode;
+  private componentScope: ComponentScope | null = null;
+  private selectedViolationFocus: ViolationSelectedPayload | null = null;
   private renderQueued = false;
   private renderListenersAttached = false;
   private focusListenerAttached = false;
@@ -80,7 +85,8 @@ export class PageOverlay {
   private inspectListenerAttached = false;
   private lastPointerSyncAt = 0;
   private activeNodeChanged: (activeNode: AccessibleNodeSummary | null) => void = () => undefined;
-  private violationSelected: (payload: ViolationSelectedPayload) => void = () => undefined;
+  private componentScopeChanged: (payload: ComponentScope | null) => void = () => undefined;
+  private violationSelected: (payload: ViolationSelectedPayload | null) => void = () => undefined;
 
   constructor() {
     this.mount();
@@ -105,6 +111,17 @@ export class PageOverlay {
     this.queueRender();
   }
 
+  setComponentScope(componentScope: ComponentScope | null): void {
+    this.componentScope = componentScope;
+    this.syncRuntimeSubscriptions();
+    this.queueRender();
+  }
+
+  setSelectedViolationFocus(payload: ViolationSelectedPayload | null): void {
+    this.selectedViolationFocus = payload;
+    this.queueRender();
+  }
+
   reset(): void {
     this.latestReport = null;
     this.focusPath = [];
@@ -116,6 +133,8 @@ export class PageOverlay {
     this.latestMouseSummary = null;
     this.latestSummary = null;
     this.violationFilters = initialViolationFilterSettings;
+    this.componentScope = null;
+    this.selectedViolationFocus = null;
     this.stopMutationObserver();
     this.syncRuntimeSubscriptions();
     this.svg.replaceChildren();
@@ -150,13 +169,18 @@ export class PageOverlay {
     this.activeNodeChanged = listener;
   }
 
-  onViolationSelected(listener: (payload: ViolationSelectedPayload) => void): void {
+  onComponentScopeChanged(listener: (payload: ComponentScope | null) => void): void {
+    this.componentScopeChanged = listener;
+  }
+
+  onViolationSelected(listener: (payload: ViolationSelectedPayload | null) => void): void {
     this.violationSelected = listener;
   }
 
   getActiveNodeSummary(element: Element): AccessibleNodeSummary {
     return {
       bounds: getElementBounds(element),
+      componentScope: resolveComponentScopeForElement(element) ?? undefined,
       description: getAccessibleDescription(element),
       name: getAccessibleName(element),
       role: getAccessibleRole(element),
@@ -452,10 +476,16 @@ export class PageOverlay {
 
     if (shouldAttach) {
       document.addEventListener('mousemove', this.showActiveNode, true);
+      document.addEventListener('mouseleave', this.hideInspectPreviewOnLeave, true);
+      window.addEventListener('blur', this.clearInspectPreview, true);
     } else {
       document.removeEventListener('mousemove', this.showActiveNode, true);
+      document.removeEventListener('mouseleave', this.hideInspectPreviewOnLeave, true);
+      window.removeEventListener('blur', this.clearInspectPreview, true);
       this.latestMouseElement = null;
       this.latestMouseSummary = null;
+      this.hideActiveNode();
+      this.queueRender();
     }
 
     this.inspectListenerAttached = shouldAttach;
@@ -506,7 +536,7 @@ export class PageOverlay {
   }
 
   private needsClickSelection(): boolean {
-    return this.latestReport !== null && this.layerVisibility.pageOverlay && this.layerVisibility.errors;
+    return this.latestReport !== null && this.readerMode.inspectWithMouse && !this.readerMode.enabled;
   }
 
   private needsInspectTracking(): boolean {
@@ -548,7 +578,15 @@ export class PageOverlay {
     }
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.errors) {
-      this.getVisibleViolations().forEach((violation, index) => this.renderViolation(violation, index));
+      const visibleViolations = this.getVisibleViolations();
+      const hasFocusedViolation = this.selectedViolationFocus
+        && visibleViolations.some(violation => this.isSelectedViolation(violation));
+
+      if (hasFocusedViolation) {
+        this.renderSelectionBackdrop();
+      }
+
+      visibleViolations.forEach((violation, index) => this.renderViolation(violation, index));
     }
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.focusPath) {
@@ -575,7 +613,9 @@ export class PageOverlay {
       bounds,
       color: severityColors[violation.severity],
       fill: overlayFillColors[violation.severity],
-      label: `#${index + 1}`,
+      label: this.isSelectedViolation(violation) ? `* #${index + 1}` : `#${index + 1}`,
+      dashArray: this.isSelectedViolation(violation) ? '4 3' : undefined,
+      selected: this.isSelectedViolation(violation),
       violation,
     });
   }
@@ -596,7 +636,7 @@ export class PageOverlay {
   }
 
   private renderBox(options: OverlayBoxOptions): void {
-    const {bounds, color, dashArray = '', fill, label, violation} = options;
+    const {bounds, color, dashArray = '', fill, label, selected = false, violation} = options;
     const x = bounds.x - window.scrollX;
     const y = bounds.y - window.scrollY;
     const width = bounds.width;
@@ -613,7 +653,7 @@ export class PageOverlay {
     rect.setAttribute('height', String(height));
     rect.setAttribute('fill', fill);
     rect.setAttribute('stroke', color);
-    rect.setAttribute('stroke-width', '2');
+    rect.setAttribute('stroke-width', selected ? '4' : '2');
     rect.setAttribute('rx', '4');
 
     if (dashArray) {
@@ -628,7 +668,7 @@ export class PageOverlay {
       group.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        this.violationSelected({selector: violation.selector, violationId: violation.id});
+        this.selectViolation(violation);
       });
     }
 
@@ -667,6 +707,17 @@ export class PageOverlay {
     group.append(labelBackground, labelText);
 
     return group;
+  }
+
+  private renderSelectionBackdrop(): void {
+    const backdrop = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    backdrop.setAttribute('x', '0');
+    backdrop.setAttribute('y', '0');
+    backdrop.setAttribute('width', String(window.innerWidth));
+    backdrop.setAttribute('height', String(window.innerHeight));
+    backdrop.setAttribute('fill', 'rgba(15, 23, 42, 0.18)');
+    backdrop.setAttribute('pointer-events', 'none');
+    this.svg.append(backdrop);
   }
 
   private renderFocusPath(): void {
@@ -799,19 +850,40 @@ export class PageOverlay {
   };
 
   private readonly selectViolationFromPointer = (event: MouseEvent): void => {
-    if (this.isOverlayEvent(event)) {
+    if (!this.readerMode.inspectWithMouse || this.readerMode.enabled) {
       return;
     }
 
-    const violation = this.getViolationAtPoint(event.clientX + window.scrollX, event.clientY + window.scrollY);
-
-    if (!violation) {
+    if (this.isOverlayEvent(event)) {
       return;
     }
 
     event.preventDefault();
     event.stopPropagation();
-    this.violationSelected({selector: violation.selector, violationId: violation.id});
+
+    const violation = this.getViolationAtPoint(event.clientX + window.scrollX, event.clientY + window.scrollY);
+
+    if (violation) {
+      this.selectViolation(violation);
+
+      return;
+    }
+
+    if (!(event.target instanceof Element)) {
+      this.componentScopeChanged(null);
+
+      return;
+    }
+
+    const directScope = resolveComponentScopeForElement(event.target);
+
+    if (directScope) {
+      this.componentScopeChanged(directScope);
+
+      return;
+    }
+
+    this.componentScopeChanged(null);
   };
 
   private readonly showActiveNode = (event: MouseEvent): void => {
@@ -851,6 +923,23 @@ export class PageOverlay {
     this.activeNodeLabel.classList.remove('inspect-popover');
     this.activeNodeLabel.classList.remove('reader-subtitle');
     this.activeNodeChanged(null);
+  };
+
+  private readonly clearInspectPreview = (): void => {
+    if (!this.readerMode.inspectWithMouse || this.readerMode.enabled) {
+      return;
+    }
+
+    this.latestMouseElement = null;
+    this.latestMouseSummary = null;
+    this.hideActiveNode();
+    this.queueRender();
+  };
+
+  private readonly hideInspectPreviewOnLeave = (event: MouseEvent): void => {
+    if (event.relatedTarget === null) {
+      this.clearInspectPreview();
+    }
   };
 
   private showReaderSubtitle(summary: AccessibleNodeSummary): void {
@@ -911,34 +1000,34 @@ export class PageOverlay {
 
     shell.append(header);
 
-    if (previewDetails.states.length || previewDetails.destination || includeSelector) {
-      const body = document.createElement('div');
-      body.className = 'panel-body';
+    const body = document.createElement('div');
+    body.className = 'panel-body';
 
-      if (previewDetails.states.length) {
-        const stateTags = document.createElement('div');
-        stateTags.className = 'state-tags';
+    if (previewDetails.states.length) {
+      const stateTags = document.createElement('div');
+      stateTags.className = 'state-tags';
 
-        previewDetails.states.slice(0, 6).forEach(state => {
-          const tag = document.createElement('span');
-          tag.className = 'state-tag';
-          tag.textContent = state;
-          stateTags.append(tag);
-        });
+      previewDetails.states.slice(0, 6).forEach(state => {
+        const tag = document.createElement('span');
+        tag.className = 'state-tag';
+        tag.textContent = state;
+        stateTags.append(tag);
+      });
 
-        body.append(stateTags);
-      }
-
-      if (previewDetails.destination) {
-        body.append(this.createPreviewRow('Destination', previewDetails.destination));
-      }
-
-      if (includeSelector) {
-        body.append(this.createPreviewRow('Selector', summary.selector));
-      }
-
-      shell.append(body);
+      body.append(stateTags);
     }
+
+    if (previewDetails.destination) {
+      body.append(this.createPreviewRow('Destination', previewDetails.destination));
+    }
+
+    if (includeSelector) {
+      body.append(this.createPreviewRow('Selector', summary.selector));
+    }
+
+    body.append(this.createPreviewRow('Component', summary.componentScope?.label ?? 'Unknown component'));
+
+    shell.append(body);
 
     this.activeNodeLabel.replaceChildren(shell);
   }
@@ -1030,7 +1119,39 @@ export class PageOverlay {
   }
 
   private getVisibleViolations(): readonly KodeGlassViolation[] {
-    return this.latestReport?.violations.filter(violation => matchesViolationFilters(violation, this.violationFilters)) ?? [];
+    return this.latestReport?.violations.filter(violation => {
+      const matchesFilters = matchesViolationFilters(violation, this.violationFilters);
+      const matchesComponentScope = !this.componentScope || violation.componentScope?.tagName === this.componentScope.tagName;
+      const matchesSelectedViolation = !this.selectedViolationFocus
+        || violation.id === this.selectedViolationFocus.violationId
+        || violation.selector === this.selectedViolationFocus.selector;
+
+      return matchesFilters && matchesComponentScope && matchesSelectedViolation;
+    }) ?? [];
+  }
+
+  private isSelectedViolation(violation: KodeGlassViolation): boolean {
+    if (!this.selectedViolationFocus) {
+      return false;
+    }
+
+    return violation.id === this.selectedViolationFocus.violationId
+      || violation.selector === this.selectedViolationFocus.selector;
+  }
+
+  private selectViolation(violation: KodeGlassViolation): void {
+    if (this.isSelectedViolation(violation)) {
+      this.selectedViolationFocus = null;
+      this.violationSelected(null);
+      this.queueRender();
+
+      return;
+    }
+
+    const payload = {selector: violation.selector, violationId: violation.id};
+    this.selectedViolationFocus = payload;
+    this.violationSelected(payload);
+    this.queueRender();
   }
 
 }

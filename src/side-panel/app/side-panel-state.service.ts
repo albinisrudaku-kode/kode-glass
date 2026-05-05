@@ -4,6 +4,8 @@ import type {
   AccessibleNodeSummary,
   AuditSettings,
   AuditStandard,
+  ComponentScope,
+  ComponentScopeOption,
   KodeGlassViolation,
   LayerName,
   LayerVisibility,
@@ -90,6 +92,8 @@ export class SidePanelStateService {
   private readonly pageTitleSignal = signal('Waiting for a page');
   private readonly pageUrlSignal = signal('');
   private readonly readerModeSignal = signal<ReaderModeSettings>(initialReaderMode);
+  private readonly componentInventorySignal = signal<readonly ComponentScopeOption[]>([]);
+  private readonly selectedComponentScopeSignal = signal<ComponentScope | null>(null);
   private readonly selectedViolationSignal = signal<ViolationSelectedPayload | null>(null);
   private readonly violationFilterSettingsSignal = signal<ViolationFilterSettings>(initialViolationFilterSettings);
   private readonly voiceOptionsSignal = signal<readonly ReaderVoiceOption[]>([]);
@@ -104,6 +108,8 @@ export class SidePanelStateService {
   readonly pageTitle = this.pageTitleSignal.asReadonly();
   readonly pageUrl = this.pageUrlSignal.asReadonly();
   readonly readerMode = this.readerModeSignal.asReadonly();
+  readonly componentInventory = this.componentInventorySignal.asReadonly();
+  readonly selectedComponentScope = this.selectedComponentScopeSignal.asReadonly();
   readonly selectedViolation = this.selectedViolationSignal.asReadonly();
   readonly severityVisibility = computed(() => this.violationFilterSettings().severity);
   readonly violationEngineFilter = computed(() => this.violationFilterSettings().engine);
@@ -146,6 +152,7 @@ export class SidePanelStateService {
   }
 
   requestAnalysis(): void {
+    this.clearSelectedComponentScope();
     this.clearSelectedViolation();
     this.analysisErrorSignal.set(null);
     this.startAnalysisLoading();
@@ -159,6 +166,8 @@ export class SidePanelStateService {
     this.activeNodeSignal.set(null);
     this.analysisErrorSignal.set(null);
     this.pageReportSignal.set(null);
+    this.componentInventorySignal.set([]);
+    this.selectedComponentScopeSignal.set(null);
     this.selectedViolationSignal.set(null);
     this.violationsSignal.set([]);
     this.violationFilterSettingsSignal.set(initialViolationFilterSettings);
@@ -185,8 +194,24 @@ export class SidePanelStateService {
     }
   }
 
-  clearSelectedViolation(): void {
+  setSelectedComponentScope(componentScope: ComponentScope | null): void {
+    this.selectedComponentScopeSignal.set(componentScope);
     this.selectedViolationSignal.set(null);
+    this.sendRuntimeMessage({payload: null, type: RuntimeMessageType.ViolationFocusChanged});
+    this.sendRuntimeMessage({payload: componentScope, type: RuntimeMessageType.ComponentScopeChanged});
+  }
+
+  clearSelectedComponentScope(): void {
+    this.setSelectedComponentScope(null);
+  }
+
+  setSelectedViolation(selectedViolation: ViolationSelectedPayload | null): void {
+    this.selectedViolationSignal.set(selectedViolation);
+    this.sendRuntimeMessage({payload: selectedViolation, type: RuntimeMessageType.ViolationFocusChanged});
+  }
+
+  clearSelectedViolation(): void {
+    this.setSelectedViolation(null);
   }
 
   toggleSeverityFilter(severity: ViolationSeverity): void {
@@ -211,11 +236,21 @@ export class SidePanelStateService {
   isFocusedGroup(group: ViolationGroup): boolean {
     const selectedViolation = this.selectedViolation();
 
-    if (!selectedViolation) {
+    if (selectedViolation) {
+      return group.violationIds.includes(selectedViolation.violationId);
+    }
+
+    const selectedComponentScope = this.selectedComponentScope();
+
+    if (!selectedComponentScope) {
       return false;
     }
 
-    return group.violationIds.includes(selectedViolation.violationId) || group.selectors.includes(selectedViolation.selector);
+    return this.violations().some(
+      violation =>
+        group.violationIds.includes(violation.id)
+        && violation.componentScope?.tagName === selectedComponentScope.tagName,
+    );
   }
 
   toggleReaderMode(): void {
@@ -348,6 +383,13 @@ export class SidePanelStateService {
         this.pageTitleSignal.set(message.payload.title || 'Untitled page');
         this.pageUrlSignal.set(message.payload.url);
         break;
+      case RuntimeMessageType.ComponentInventoryChanged:
+        this.componentInventorySignal.set(message.payload);
+        break;
+      case RuntimeMessageType.ComponentScopeChanged:
+        this.selectedComponentScopeSignal.set(message.payload);
+        this.selectedViolationSignal.set(null);
+        break;
       case RuntimeMessageType.ReportGenerated:
         if (message.payload.auditSettings.standard !== this.auditSettings().standard) {
           break;
@@ -411,6 +453,8 @@ export class SidePanelStateService {
     this.pageTitleSignal.set('Waiting for a page');
     this.pageUrlSignal.set('');
     this.readerModeSignal.set(initialReaderMode);
+    this.componentInventorySignal.set([]);
+    this.selectedComponentScopeSignal.set(null);
     this.selectedViolationSignal.set(null);
     this.violationsSignal.set([]);
     this.violationFilterSettingsSignal.set(initialViolationFilterSettings);
@@ -664,15 +708,18 @@ export class SidePanelStateService {
 
   private createVisibleViolations(options: {readonly includeSeverityFilter: boolean} = {includeSeverityFilter: true}): readonly KodeGlassViolation[] {
     const selectedViolation = this.selectedViolation();
+    const selectedComponentScope = this.selectedComponentScope();
     const filterSettings = this.violationFilterSettings();
 
     return this.violations().filter(violation => {
       const matchesSelectedViolation = !selectedViolation
         || violation.id === selectedViolation.violationId
         || violation.selector === selectedViolation.selector;
+      const matchesSelectedComponent = !selectedComponentScope
+        || violation.componentScope?.tagName === selectedComponentScope.tagName;
       const matchesFilters = matchesViolationFilters(violation, filterSettings, options);
 
-      return matchesSelectedViolation && matchesFilters;
+      return matchesSelectedViolation && matchesSelectedComponent && matchesFilters;
     });
   }
 }
