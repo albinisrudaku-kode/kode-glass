@@ -43,6 +43,7 @@ export interface AuditSettings {
 export interface ReaderModeSettings {
   readonly enabled: boolean;
   readonly inspectWithMouse: boolean;
+  readonly lockInteractions: boolean;
   readonly rate?: number;
   readonly speak: boolean;
   readonly voiceName?: string;

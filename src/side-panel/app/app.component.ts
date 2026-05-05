@@ -380,6 +380,10 @@ export class AppComponent {
     this.state.setMouseInspection(inspectWithMouse);
   }
 
+  protected setInspectInteractionLock(lockInteractions: boolean): void {
+    this.state.setInspectInteractionLock(lockInteractions);
+  }
+
   protected setReaderSpeech(speak: boolean): void {
     this.state.setReaderSpeech(speak);
   }

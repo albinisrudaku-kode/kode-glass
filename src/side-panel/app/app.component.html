@@ -157,6 +157,16 @@
               }
             </div>
           }
+
+          @if (previewMode() === 'inspect') {
+            <label class="tool-row">
+              <span class="tool-copy">
+                <span class="eyebrow">Inspect</span>
+                <strong>Lock page interactions</strong>
+              </span>
+              <input tuiSwitch type="checkbox" size="s" [ngModel]="state.readerMode().lockInteractions" (ngModelChange)="setInspectInteractionLock($event)" />
+            </label>
+          }
         </div>
       }
     </section>
@@ -468,7 +478,7 @@
                     }
                   </ul>
                 } @else {
-                  <p class="report-note">No violations found for this audit scope.</p>
+                  <p class="report-note">No violations match the current filters.</p>
                 }
               </section>
 

@@ -69,6 +69,7 @@ const initialAuditSettings: AuditSettings = {
 const initialReaderMode: ReaderModeSettings = {
   enabled: false,
   inspectWithMouse: false,
+  lockInteractions: false,
   rate: 0.92,
   speak: false,
 };
@@ -125,12 +126,12 @@ export class SidePanelStateService {
   readonly hasViolations = computed(() => this.violations().length > 0);
   readonly hasVisibleViolations = computed(() => this.visibleViolations().length > 0);
   readonly hasStructure = computed(() => this.headings().length > 0 || this.landmarks().length > 0);
-  readonly reportSeverityCounts = computed(() => this.createSeverityCounts(this.violations()));
+  readonly reportSeverityCounts = computed(() => this.createSeverityCounts(this.visibleViolations()));
   readonly severityCounts = computed(() => this.createSeverityCounts());
   readonly totalHeadings = computed(() => this.headings().length);
   readonly totalLandmarks = computed(() => this.landmarks().length);
   readonly totalViolations = computed(() => this.violations().length);
-  readonly violationGroups = computed(() => this.createViolationGroups(this.violations()));
+  readonly violationGroups = computed(() => this.createViolationGroups(this.visibleViolations()));
   readonly topViolationGroups = computed(() => this.violationGroups().slice(0, 6));
   readonly visibleViolationGroups = computed(() => this.createViolationGroups());
   readonly reportMarkdown = computed(() => this.createReportMarkdown());
@@ -264,6 +265,7 @@ export class SidePanelStateService {
       ...readerMode,
       enabled,
       inspectWithMouse: enabled ? false : readerMode.inspectWithMouse,
+      lockInteractions: enabled ? false : readerMode.lockInteractions,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: enabled ? readerMode.speak : false,
     });
@@ -280,6 +282,7 @@ export class SidePanelStateService {
       ...readerMode,
       enabled: mode === 'reader',
       inspectWithMouse: mode === 'inspect',
+      lockInteractions: mode === 'inspect' ? readerMode.lockInteractions : false,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: mode === 'reader' ? readerMode.speak : false,
     });
@@ -292,8 +295,20 @@ export class SidePanelStateService {
       ...readerMode,
       enabled: inspectWithMouse ? false : readerMode.enabled,
       inspectWithMouse,
+      lockInteractions: inspectWithMouse ? readerMode.lockInteractions : false,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak: inspectWithMouse ? false : readerMode.speak,
+    });
+  }
+
+  setInspectInteractionLock(lockInteractions: boolean): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      ...readerMode,
+      lockInteractions: readerMode.inspectWithMouse ? lockInteractions : false,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
     });
   }
 
@@ -622,7 +637,14 @@ export class SidePanelStateService {
       return '';
     }
 
-    const violations = report.violations.map((violation, index) => [
+    const filteredViolations = this.createVisibleViolations();
+    const selectedSeverities = Object.entries(this.violationFilterSettings().severity)
+      .filter(([, enabled]) => enabled)
+      .map(([severity]) => severity)
+      .join(', ') || 'none';
+    const selectedComponentScope = this.selectedComponentScope()?.label ?? 'All components';
+    const selectedViolation = this.selectedViolation();
+    const violations = filteredViolations.map((violation, index) => [
       `${index + 1}. ${getReadableSummary(violation)}`,
       `   - Engine: ${formatViolationEngines(violation.sourceEngines ?? [violation.engine])}`,
       `   - Rule: ${violation.ruleId}`,
@@ -653,7 +675,14 @@ export class SidePanelStateService {
       '',
       engineStatuses.join('\n') || 'No engine status available.',
       '',
-      `## Violations (${report.violations.length})`,
+      '## Applied Filters',
+      '',
+      `- Engine: ${this.violationFilterSettings().engine}`,
+      `- Severity: ${selectedSeverities}`,
+      `- Component: ${selectedComponentScope}`,
+      `- Focused violation: ${selectedViolation?.violationId ?? 'none'}`,
+      '',
+      `## Violations (${filteredViolations.length} of ${report.violations.length})`,
       '',
       violations.join('\n\n') || 'No violations found.',
       '',

@@ -30,7 +30,6 @@ interface OverlayBoxOptions {
   readonly fill: string;
   readonly label: string;
   readonly selected?: boolean;
-  readonly violation?: KodeGlassViolation;
 }
 
 const severityColors: Record<KodeGlassViolation['severity'], string> = {
@@ -55,6 +54,7 @@ const initialLayerVisibility: LayerVisibility = {
 const initialReaderMode: ReaderModeSettings = {
   enabled: false,
   inspectWithMouse: false,
+  lockInteractions: false,
   rate: 0.92,
   speak: false,
 };
@@ -433,9 +433,15 @@ export class PageOverlay {
     if (shouldAttach) {
       window.addEventListener('scroll', this.queueRender, {passive: true});
       window.addEventListener('resize', this.queueRender);
+      document.addEventListener('scroll', this.queueRender, {capture: true, passive: true});
+      window.visualViewport?.addEventListener('resize', this.queueRender, {passive: true});
+      window.visualViewport?.addEventListener('scroll', this.queueRender, {passive: true});
     } else {
       window.removeEventListener('scroll', this.queueRender);
       window.removeEventListener('resize', this.queueRender);
+      document.removeEventListener('scroll', this.queueRender, true);
+      window.visualViewport?.removeEventListener('resize', this.queueRender);
+      window.visualViewport?.removeEventListener('scroll', this.queueRender);
     }
 
     this.renderListenersAttached = shouldAttach;
@@ -536,7 +542,7 @@ export class PageOverlay {
   }
 
   private needsClickSelection(): boolean {
-    return this.latestReport !== null && this.readerMode.inspectWithMouse && !this.readerMode.enabled;
+    return this.latestReport !== null && this.layerVisibility.pageOverlay && this.layerVisibility.errors && !this.readerMode.enabled;
   }
 
   private needsInspectTracking(): boolean {
@@ -609,14 +615,19 @@ export class PageOverlay {
       return;
     }
 
+    const selected = this.isSelectedViolation(violation);
+
+    if (selected) {
+      this.renderFocusedViolationHalo(bounds);
+    }
+
     this.renderBox({
       bounds,
       color: severityColors[violation.severity],
       fill: overlayFillColors[violation.severity],
-      label: this.isSelectedViolation(violation) ? `* #${index + 1}` : `#${index + 1}`,
-      dashArray: this.isSelectedViolation(violation) ? '4 3' : undefined,
-      selected: this.isSelectedViolation(violation),
-      violation,
+      label: selected ? `* #${index + 1}` : `#${index + 1}`,
+      dashArray: selected ? '4 3' : undefined,
+      selected,
     });
   }
 
@@ -636,7 +647,7 @@ export class PageOverlay {
   }
 
   private renderBox(options: OverlayBoxOptions): void {
-    const {bounds, color, dashArray = '', fill, label, selected = false, violation} = options;
+    const {bounds, color, dashArray = '', fill, label, selected = false} = options;
     const x = bounds.x - window.scrollX;
     const y = bounds.y - window.scrollY;
     const width = bounds.width;
@@ -662,15 +673,6 @@ export class PageOverlay {
 
     const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     group.append(rect, this.createBadge(label, color, x, y, height));
-
-    if (violation) {
-      group.classList.add('interactive-box');
-      group.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.selectViolation(violation);
-      });
-    }
 
     this.svg.append(group);
   }
@@ -707,6 +709,26 @@ export class PageOverlay {
     group.append(labelBackground, labelText);
 
     return group;
+  }
+
+  private renderFocusedViolationHalo(bounds: ElementBounds): void {
+    const x = bounds.x - window.scrollX;
+    const y = bounds.y - window.scrollY;
+    const width = bounds.width;
+    const height = bounds.height;
+    const halo = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    halo.setAttribute('x', String(Math.max(2, x - 8)));
+    halo.setAttribute('y', String(Math.max(2, y - 8)));
+    halo.setAttribute('width', String(width + 16));
+    halo.setAttribute('height', String(height + 16));
+    halo.setAttribute('rx', '10');
+    halo.setAttribute('fill', 'rgba(251, 191, 36, 0.08)');
+    halo.setAttribute('stroke', '#f59e0b');
+    halo.setAttribute('stroke-width', '3');
+    halo.setAttribute('stroke-dasharray', '8 6');
+    halo.setAttribute('filter', 'drop-shadow(0 10px 20px rgb(245 158 11 / 35%))');
+    halo.setAttribute('pointer-events', 'none');
+    this.svg.append(halo);
   }
 
   private renderSelectionBackdrop(): void {
@@ -850,7 +872,7 @@ export class PageOverlay {
   };
 
   private readonly selectViolationFromPointer = (event: MouseEvent): void => {
-    if (!this.readerMode.inspectWithMouse || this.readerMode.enabled) {
+    if (!this.latestReport || this.readerMode.enabled) {
       return;
     }
 
@@ -858,14 +880,17 @@ export class PageOverlay {
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
-
     const violation = this.getViolationAtPoint(event.clientX + window.scrollX, event.clientY + window.scrollY);
 
     if (violation) {
+      event.preventDefault();
+      event.stopPropagation();
       this.selectViolation(violation);
 
+      return;
+    }
+
+    if (!this.readerMode.inspectWithMouse) {
       return;
     }
 
@@ -878,12 +903,19 @@ export class PageOverlay {
     const directScope = resolveComponentScopeForElement(event.target);
 
     if (directScope) {
+      if (this.readerMode.lockInteractions) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
       this.componentScopeChanged(directScope);
 
       return;
     }
 
-    this.componentScopeChanged(null);
+    if (this.readerMode.lockInteractions) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   };
 
   private readonly showActiveNode = (event: MouseEvent): void => {

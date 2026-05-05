@@ -96,10 +96,6 @@ chrome.runtime.onConnect.addListener(port => {
       return;
     }
 
-    if (connectedTabId !== activeTabId) {
-      return;
-    }
-
     latestMessagesByTab.delete(connectedTabId);
     void sendTabMessage(connectedTabId, {
       payload: {},
