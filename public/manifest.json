@@ -22,5 +22,6 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["activeTab", "downloads", "sidePanel", "scripting", "tabCapture", "tabs", "tts"]
+  "permissions": ["activeTab", "downloads", "identity", "sidePanel", "scripting", "storage", "tabCapture", "tabs", "tts"],
+  "host_permissions": ["https://api.atlassian.com/*", "https://auth.atlassian.com/*"]
 }

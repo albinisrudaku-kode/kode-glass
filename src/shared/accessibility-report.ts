@@ -68,6 +68,35 @@ export interface CaptureBoundsSnapshot {
   readonly viewportWidth: number;
 }
 
+export interface JiraSiteOption {
+  readonly id: string;
+  readonly name: string;
+  readonly url: string;
+}
+
+export interface JiraProjectOption {
+  readonly id: string;
+  readonly key: string;
+  readonly name: string;
+}
+
+export interface JiraIssueTypeOption {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface JiraAuthSession {
+  readonly accountId?: string;
+  readonly displayName?: string;
+  readonly error?: string;
+  readonly issueTypeId?: string;
+  readonly issueTypeName?: string;
+  readonly projectId?: string;
+  readonly projectKey?: string;
+  readonly site?: JiraSiteOption;
+  readonly status: 'connected' | 'connecting' | 'disconnected';
+}
+
 export interface AccessibleNodeSummary {
   readonly bounds?: ElementBounds;
   readonly componentScope?: ComponentScope;

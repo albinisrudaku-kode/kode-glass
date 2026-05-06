@@ -6,11 +6,20 @@ import {
   type EvidenceVideoBufferToggleResponse,
   type EvidenceVideoRollbackRequestedMessage,
   type EvidenceVideoRollbackResponse,
+  type JiraAuthStatusResponse,
+  type JiraConnectRequestedMessage,
+  type JiraConnectResponse,
+  type JiraDisconnectResponse,
+  type JiraIssueCreateRequestedMessage,
+  type JiraIssueCreateResponse,
+  type JiraIssueTypesResponse,
+  type JiraProjectsResponse,
+  type JiraSitesResponse,
   type ReaderSpeakPayload,
   type ReportGeneratedMessage,
   type RuntimeMessage,
 } from '../shared/messages';
-import type {CaptureBoundsSnapshot} from '../shared/accessibility-report';
+import type {CaptureBoundsSnapshot, JiraSiteOption} from '../shared/accessibility-report';
 
 const latestMessagesByTab = new Map<number, RuntimeMessage>();
 const latestReportsByTab = new Map<number, ReportGeneratedMessage>();
@@ -21,6 +30,21 @@ const sidePanelPath = 'side-panel.html';
 const sidePanelPortName = 'kode-glass-side-panel';
 const videoChunkTimesliceMs = 1000;
 const maxRollbackWindowMs = 5 * 60 * 1000;
+const visibleTabCaptureCooldownMs = 650;
+const jiraStorageKey = 'jira.oauth.session';
+const jiraScope = 'read:me read:jira-user read:jira-work write:jira-work offline_access';
+const jiraAuthAudience = 'api.atlassian.com';
+let lastVisibleTabCaptureAt = 0;
+
+interface JiraOAuthSessionStorage {
+  readonly accessToken: string;
+  readonly accountId?: string;
+  readonly clientId: string;
+  readonly displayName?: string;
+  readonly expiresAt: number;
+  readonly refreshToken?: string;
+  readonly site?: JiraSiteOption;
+}
 
 interface TabVideoBufferState {
   readonly chunks: Array<{readonly blob: Blob; readonly recordedAt: number}>;
@@ -79,6 +103,62 @@ if (!extensionApi?.runtime || !extensionApi?.tabs) {
     return true;
   }
 
+  if (message.type === RuntimeMessageType.JiraAuthStatusRequested) {
+    void getJiraAuthStatus()
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({session: {error: getErrorMessage(error), status: 'disconnected'}} satisfies JiraAuthStatusResponse));
+
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.JiraConnectRequested) {
+    void connectJira(message)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false} satisfies JiraConnectResponse));
+
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.JiraDisconnectRequested) {
+    void disconnectJira()
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false} satisfies JiraDisconnectResponse));
+
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.JiraSitesRequested) {
+    void getJiraSites()
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false, sites: []} satisfies JiraSitesResponse));
+
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.JiraProjectsRequested) {
+    void getJiraProjects()
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false, projects: []} satisfies JiraProjectsResponse));
+
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.JiraIssueTypesRequested) {
+    void getJiraIssueTypes(message.payload.projectKey)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), issueTypes: [], ok: false} satisfies JiraIssueTypesResponse));
+
+    return true;
+  }
+
+  if (message.type === RuntimeMessageType.JiraIssueCreateRequested) {
+    void createJiraIssue(message)
+      .then(response => sendResponse(response))
+      .catch(error => sendResponse({error: getErrorMessage(error), ok: false} satisfies JiraIssueCreateResponse));
+
+    return true;
+  }
+
   const tabId = sender.tab?.id;
   const messageForPanel = tabId === undefined ? message : {...message, tabId};
 
@@ -114,6 +194,10 @@ if (!extensionApi?.runtime || !extensionApi?.tabs) {
     }
 
     if (message.type === RuntimeMessageType.ResetCompleted) {
+      latestReportsByTab.delete(tabId);
+    }
+
+    if (message.type === RuntimeMessageType.TabReloaded) {
       latestReportsByTab.delete(tabId);
     }
 
@@ -178,6 +262,7 @@ if (!extensionApi?.runtime || !extensionApi?.tabs) {
     analyzerInjectedTabs.delete(tabId);
     latestMessagesByTab.delete(tabId);
     latestReportsByTab.delete(tabId);
+    void resetContentScriptForNavigation(tabId);
   }
 
   if (changeInfo.status === 'loading' || changeInfo.url !== undefined) {
@@ -237,6 +322,14 @@ async function forwardToTargetTab(message: RuntimeMessage): Promise<void> {
   if (!sent && message.type === RuntimeMessageType.AnalysisRequested) {
     notifyPanelAnalysisFailure(activeTab.id, 'Could not deliver the scan request to this page. Refresh the page, then run the scan again.');
   }
+}
+
+async function resetContentScriptForNavigation(tabId: number): Promise<void> {
+  await sendTabMessage(tabId, {
+    payload: {},
+    tabId,
+    type: RuntimeMessageType.ResetRequested,
+  });
 }
 
 async function enableSidePanelForOpenTabs(): Promise<void> {
@@ -371,6 +464,7 @@ async function captureEvidenceImage(
     return {error: 'No target selected for image capture.', ok: false};
   }
 
+  await waitForVisibleTabCaptureSlot();
   const screenshotDataUrl = await chrome.tabs.captureVisibleTab(windowId, {format: 'png'});
 
   return {
@@ -379,6 +473,17 @@ async function captureEvidenceImage(
     screenshotDataUrl,
     snapshot,
   };
+}
+
+async function waitForVisibleTabCaptureSlot(): Promise<void> {
+  const elapsedMs = Date.now() - lastVisibleTabCaptureAt;
+  const delayMs = Math.max(0, visibleTabCaptureCooldownMs - elapsedMs);
+
+  if (delayMs > 0) {
+    await wait(delayMs);
+  }
+
+  lastVisibleTabCaptureAt = Date.now();
 }
 
 async function requestCaptureBoundsFromTab(
@@ -396,6 +501,438 @@ async function requestCaptureBoundsFromTab(
   } catch {
     return undefined;
   }
+}
+
+async function getJiraAuthStatus(): Promise<JiraAuthStatusResponse> {
+  const session = await readStoredJiraSession();
+
+  if (!session) {
+    return {session: {status: 'disconnected'}};
+  }
+
+  return {
+    session: {
+      accountId: session.accountId,
+      displayName: session.displayName,
+      issueTypeId: undefined,
+      issueTypeName: undefined,
+      projectId: undefined,
+      projectKey: undefined,
+      site: session.site,
+      status: 'connected',
+    },
+  };
+}
+
+async function connectJira(
+  message: JiraConnectRequestedMessage,
+): Promise<JiraConnectResponse> {
+  const clientId = message.payload.clientId.trim();
+
+  if (!clientId) {
+    return {error: 'Atlassian client ID is required.', ok: false};
+  }
+
+  const identityApi = chrome.identity;
+
+  if (!identityApi) {
+    return {error: 'Chrome identity API is unavailable.', ok: false};
+  }
+
+  const redirectUri = identityApi.getRedirectURL('jira-oauth');
+  const verifier = createPkceVerifier();
+  const challenge = await createPkceChallenge(verifier);
+  const state = crypto.randomUUID();
+  const authUrl = new URL('https://auth.atlassian.com/authorize');
+  authUrl.searchParams.set('audience', jiraAuthAudience);
+  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('scope', jiraScope);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('prompt', 'consent');
+  authUrl.searchParams.set('code_challenge', challenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+
+  const callbackUrl = await identityApi.launchWebAuthFlow({
+    interactive: true,
+    url: authUrl.toString(),
+  });
+
+  if (!callbackUrl) {
+    return {error: 'Jira authentication was cancelled.', ok: false};
+  }
+
+  const callback = new URL(callbackUrl);
+  const returnedState = callback.searchParams.get('state');
+  const authError = callback.searchParams.get('error');
+
+  if (authError) {
+    return {error: `Jira auth failed: ${authError}`, ok: false};
+  }
+
+  if (!returnedState || returnedState !== state) {
+    return {error: 'Invalid Jira OAuth state returned.', ok: false};
+  }
+
+  const code = callback.searchParams.get('code');
+
+  if (!code) {
+    return {error: 'Jira authorization code was not returned.', ok: false};
+  }
+
+  const token = await exchangeAuthCodeForToken({clientId, code, redirectUri, verifier});
+  const site = await getDefaultJiraSite(token.access_token);
+  const profile = await getJiraMyself(token.access_token, site.id);
+  const storedSession: JiraOAuthSessionStorage = {
+    accessToken: token.access_token,
+    accountId: profile.accountId,
+    clientId,
+    displayName: profile.displayName,
+    expiresAt: Date.now() + Math.max(30, token.expires_in) * 1000,
+    refreshToken: token.refresh_token,
+    site,
+  };
+  await writeStoredJiraSession(storedSession);
+
+  return {
+    ok: true,
+    session: {
+      accountId: profile.accountId,
+      displayName: profile.displayName,
+      site,
+      status: 'connected',
+    },
+  };
+}
+
+async function disconnectJira(): Promise<JiraDisconnectResponse> {
+  await chrome.storage.local.remove(jiraStorageKey);
+
+  return {ok: true};
+}
+
+async function getJiraSites(): Promise<JiraSitesResponse> {
+  const accessToken = await getValidJiraAccessToken();
+
+  if (!accessToken) {
+    return {error: 'Connect Jira first to load available sites.', ok: false, sites: []};
+  }
+
+  try {
+    const sites = await fetchJiraSites(accessToken);
+
+    return {ok: true, sites};
+  } catch (error) {
+    return {error: getErrorMessage(error), ok: false, sites: []};
+  }
+}
+
+async function getJiraProjects(): Promise<JiraProjectsResponse> {
+  const session = await getValidatedStoredSession();
+
+  if (!session?.site) {
+    return {error: 'Connect Jira first to load projects.', ok: false, projects: []};
+  }
+
+  const response = await fetchJiraApi<{
+    readonly values?: ReadonlyArray<{readonly id: string; readonly key: string; readonly name: string}>;
+  }>(session.accessToken, session.site.id, '/rest/api/3/project/search?maxResults=100');
+
+  return {
+    ok: true,
+    projects: (response.values ?? []).map(project => ({
+      id: project.id,
+      key: project.key,
+      name: project.name,
+    })),
+  };
+}
+
+async function getJiraIssueTypes(projectKey: string): Promise<JiraIssueTypesResponse> {
+  const session = await getValidatedStoredSession();
+
+  if (!session?.site) {
+    return {error: 'Connect Jira first to load issue types.', issueTypes: [], ok: false};
+  }
+
+  const encodedProjectKey = encodeURIComponent(projectKey);
+  const metadata = await fetchJiraApi<{
+    readonly projects?: ReadonlyArray<{
+      readonly issuetypes?: ReadonlyArray<{readonly id: string; readonly name: string}>;
+    }>;
+  }>(
+    session.accessToken,
+    session.site.id,
+    `/rest/api/3/issue/createmeta?projectKeys=${encodedProjectKey}&expand=projects.issuetypes`,
+  );
+  const issueTypes = metadata.projects?.[0]?.issuetypes ?? [];
+
+  return {
+    issueTypes: issueTypes.map(issueType => ({id: issueType.id, name: issueType.name})),
+    ok: true,
+  };
+}
+
+async function createJiraIssue(
+  message: JiraIssueCreateRequestedMessage,
+): Promise<JiraIssueCreateResponse> {
+  const session = await getValidatedStoredSession();
+
+  if (!session?.site) {
+    return {error: 'Connect Jira before creating tasks.', ok: false};
+  }
+
+  const issueResult = await fetchJiraApi<{readonly key: string}>(
+    session.accessToken,
+    session.site.id,
+    '/rest/api/3/issue',
+    {
+      body: JSON.stringify({
+        fields: {
+          description: {
+            content: [
+              {
+                content: [{text: message.payload.description, type: 'text'}],
+                type: 'paragraph',
+              },
+            ],
+            type: 'doc',
+            version: 1,
+          },
+          issuetype: {id: message.payload.issueTypeId},
+          project: {key: message.payload.projectKey},
+          summary: message.payload.summary,
+        },
+      }),
+      method: 'POST',
+    },
+  );
+
+  if (message.payload.evidenceImageDataUrls.length) {
+    await uploadJiraAttachments(
+      session.accessToken,
+      session.site.id,
+      issueResult.key,
+      message.payload.evidenceImageDataUrls,
+    );
+  }
+
+  return {
+    issueKey: issueResult.key,
+    issueUrl: `${session.site.url}/browse/${issueResult.key}`,
+    ok: true,
+  };
+}
+
+async function uploadJiraAttachments(
+  accessToken: string,
+  siteId: string,
+  issueKey: string,
+  evidenceImageDataUrls: readonly string[],
+): Promise<void> {
+  for (const [index, evidenceImageDataUrl] of evidenceImageDataUrls.entries()) {
+    const blob = await fetch(evidenceImageDataUrl).then(response => response.blob());
+    const formData = new FormData();
+    formData.append('file', blob, `kode-glass-evidence-${index + 1}.png`);
+
+    await fetchJiraApi(
+      accessToken,
+      siteId,
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/attachments`,
+      {
+        body: formData,
+        headers: {'X-Atlassian-Token': 'no-check'},
+        method: 'POST',
+      },
+    );
+  }
+}
+
+async function fetchJiraApi<TResponse>(
+  accessToken: string,
+  siteId: string,
+  path: string,
+  init?: RequestInit,
+): Promise<TResponse> {
+  const response = await fetch(`https://api.atlassian.com/ex/jira/${siteId}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(init?.body instanceof FormData ? {} : {'Content-Type': 'application/json'}),
+      ...init?.headers,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Jira request failed (${response.status}): ${await response.text()}`);
+  }
+
+  if (response.status === 204) {
+    return undefined as TResponse;
+  }
+
+  return response.json() as Promise<TResponse>;
+}
+
+async function fetchJiraSites(accessToken: string): Promise<readonly JiraSiteOption[]> {
+  const response = await fetch('https://api.atlassian.com/oauth/token/accessible-resources', {
+    headers: {Authorization: `Bearer ${accessToken}`},
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to fetch Jira sites (${response.status}).`);
+  }
+
+  const resources = await response.json() as ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly url: string;
+  }>;
+
+  return resources.map(resource => ({id: resource.id, name: resource.name, url: resource.url}));
+}
+
+async function getDefaultJiraSite(accessToken: string): Promise<JiraSiteOption> {
+  const sites = await fetchJiraSites(accessToken);
+
+  if (!sites.length) {
+    throw new Error('No Jira cloud sites are accessible for this Atlassian account.');
+  }
+
+  const [firstSite] = sites;
+
+  return firstSite!;
+}
+
+async function getJiraMyself(accessToken: string, siteId: string): Promise<{
+  readonly accountId: string;
+  readonly displayName: string;
+}> {
+  return fetchJiraApi<{readonly accountId: string; readonly displayName: string}>(
+    accessToken,
+    siteId,
+    '/rest/api/3/myself',
+  );
+}
+
+async function exchangeAuthCodeForToken(input: {
+  readonly clientId: string;
+  readonly code: string;
+  readonly redirectUri: string;
+  readonly verifier: string;
+}): Promise<{
+  readonly access_token: string;
+  readonly expires_in: number;
+  readonly refresh_token?: string;
+}> {
+  const response = await fetch('https://auth.atlassian.com/oauth/token', {
+    body: JSON.stringify({
+      client_id: input.clientId,
+      code: input.code,
+      code_verifier: input.verifier,
+      grant_type: 'authorization_code',
+      redirect_uri: input.redirectUri,
+    }),
+    headers: {'Content-Type': 'application/json'},
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Jira token exchange failed (${response.status}).`);
+  }
+
+  return response.json() as Promise<{
+    readonly access_token: string;
+    readonly expires_in: number;
+    readonly refresh_token?: string;
+  }>;
+}
+
+async function refreshJiraToken(session: JiraOAuthSessionStorage): Promise<JiraOAuthSessionStorage> {
+  if (!session.refreshToken) {
+    throw new Error('Jira session expired. Reconnect Jira to continue.');
+  }
+
+  const response = await fetch('https://auth.atlassian.com/oauth/token', {
+    body: JSON.stringify({
+      client_id: session.clientId,
+      grant_type: 'refresh_token',
+      refresh_token: session.refreshToken,
+    }),
+    headers: {'Content-Type': 'application/json'},
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Jira token refresh failed (${response.status}).`);
+  }
+
+  const payload = await response.json() as {
+    readonly access_token: string;
+    readonly expires_in: number;
+    readonly refresh_token?: string;
+  };
+
+  const refreshedSession: JiraOAuthSessionStorage = {
+    ...session,
+    accessToken: payload.access_token,
+    expiresAt: Date.now() + Math.max(30, payload.expires_in) * 1000,
+    refreshToken: payload.refresh_token ?? session.refreshToken,
+  };
+  await writeStoredJiraSession(refreshedSession);
+
+  return refreshedSession;
+}
+
+async function getValidatedStoredSession(): Promise<JiraOAuthSessionStorage | null> {
+  const session = await readStoredJiraSession();
+
+  if (!session) {
+    return null;
+  }
+
+  if (session.expiresAt > Date.now() + 15_000) {
+    return session;
+  }
+
+  return refreshJiraToken(session);
+}
+
+async function getValidJiraAccessToken(): Promise<string | null> {
+  const session = await getValidatedStoredSession();
+
+  return session?.accessToken ?? null;
+}
+
+async function readStoredJiraSession(): Promise<JiraOAuthSessionStorage | null> {
+  const storage = await chrome.storage.local.get(jiraStorageKey);
+  const storedSession = storage[jiraStorageKey] as JiraOAuthSessionStorage | undefined;
+
+  return storedSession ?? null;
+}
+
+async function writeStoredJiraSession(session: JiraOAuthSessionStorage): Promise<void> {
+  await chrome.storage.local.set({[jiraStorageKey]: session});
+}
+
+function createPkceVerifier(): string {
+  const randomValues = crypto.getRandomValues(new Uint8Array(32));
+
+  return toBase64Url(randomValues);
+}
+
+async function createPkceChallenge(verifier: string): Promise<string> {
+  const encodedVerifier = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', encodedVerifier);
+
+  return toBase64Url(new Uint8Array(digest));
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  const base64 = btoa(String.fromCharCode(...bytes));
+
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
 async function toggleVideoBuffer(
@@ -632,6 +1169,10 @@ function resolveChromeTtsVoiceName(
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function wait(durationMs: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, durationMs));
 }
 
 function rememberLatestTabMessage(tabId: number, message: RuntimeMessage): void {

@@ -11,6 +11,12 @@ interface KodeGlassWindow extends Window {
   __kodeGlassContentScriptInitialized?: boolean;
 }
 
+interface ContentScriptNavigationState {
+  latestUrl: string;
+  navigationRevision: number;
+  syncTimer: ReturnType<typeof setTimeout> | undefined;
+}
+
 const kodeGlassWindow = window as KodeGlassWindow;
 
 if (!kodeGlassWindow.__kodeGlassContentScriptInitialized) {
@@ -20,6 +26,11 @@ if (!kodeGlassWindow.__kodeGlassContentScriptInitialized) {
 
 function initializeContentScript(): void {
   const pageOverlay = new PageOverlay();
+  const navigationState: ContentScriptNavigationState = {
+    latestUrl: location.href,
+    navigationRevision: 0,
+    syncTimer: undefined,
+  };
 
   pageOverlay.onActiveNodeChanged(activeNode => {
     void dispatchRuntimeMessage({
@@ -42,6 +53,8 @@ function initializeContentScript(): void {
     }).catch(() => undefined);
   });
 
+  installNavigationWatcher(pageOverlay, navigationState);
+
   void sendContentReadyMessage();
 
   chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
@@ -60,7 +73,7 @@ function initializeContentScript(): void {
     }
 
     if (message.type === RuntimeMessageType.AnalysisRequested) {
-      void runAnalysis(pageOverlay, message.payload).catch(error => sendAnalysisFailure(error));
+      void runAnalysis(pageOverlay, message.payload, navigationState).catch(error => sendAnalysisFailure(error));
     }
 
     if (message.type === RuntimeMessageType.LayerVisibilityChanged) {
@@ -96,10 +109,63 @@ function initializeContentScript(): void {
   });
 }
 
-async function runAnalysis(pageOverlay: PageOverlay, auditSettings: AuditSettings): Promise<void> {
+function installNavigationWatcher(pageOverlay: PageOverlay, navigationState: ContentScriptNavigationState): void {
+  const handlePotentialNavigation = (): void => {
+    const currentUrl = location.href;
+
+    if (currentUrl === navigationState.latestUrl) {
+      return;
+    }
+
+    navigationState.latestUrl = currentUrl;
+    navigationState.navigationRevision += 1;
+    pageOverlay.reset();
+    window.speechSynthesis?.cancel();
+
+    void dispatchRuntimeMessage({
+      payload: {},
+      type: RuntimeMessageType.TabReloaded,
+    }).catch(() => undefined);
+
+    clearTimeout(navigationState.syncTimer);
+    navigationState.syncTimer = setTimeout(() => {
+      void sendContentReadyMessage().catch(error => {
+        sendAnalysisFailure(new Error(`Failed to sync page context: ${getErrorMessage(error)}`));
+      });
+    }, 120);
+  };
+
+  wrapHistoryNavigation('pushState', handlePotentialNavigation);
+  wrapHistoryNavigation('replaceState', handlePotentialNavigation);
+  window.addEventListener('popstate', handlePotentialNavigation, {passive: true});
+  window.addEventListener('hashchange', handlePotentialNavigation, {passive: true});
+}
+
+function wrapHistoryNavigation(methodName: 'pushState' | 'replaceState', onNavigation: () => void): void {
+  const originalMethod = history[methodName];
+
+  history[methodName] = function patchedHistoryMethod(...args: Parameters<typeof originalMethod>): ReturnType<typeof originalMethod> {
+    const result = originalMethod.apply(this, args);
+    queueMicrotask(onNavigation);
+
+    return result;
+  } as typeof originalMethod;
+}
+
+async function runAnalysis(
+  pageOverlay: PageOverlay,
+  auditSettings: AuditSettings,
+  navigationState: ContentScriptNavigationState,
+): Promise<void> {
+  const analysisNavigationRevision = navigationState.navigationRevision;
   await sendContentReadyMessage();
 
   const rawReport = await getAnalyzeCurrentPage()(auditSettings);
+
+  if (analysisNavigationRevision !== navigationState.navigationRevision || rawReport.pageUrl !== location.href) {
+    return;
+  }
+
   const report = {
     ...rawReport,
     violations: enrichViolationsWithComponentScope(rawReport.violations),

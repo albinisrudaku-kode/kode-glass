@@ -71,6 +71,11 @@ textarea {
   gap: 0.5rem;
 }
 
+.settings-toggle[tuiButton],
+.theme-toggle[tuiButton] {
+  min-inline-size: 2.25rem;
+}
+
 .title-block,
 .page-title,
 .audit-picker,
@@ -110,11 +115,22 @@ textarea {
 
 .page-summary,
 .actions,
+.settings-panel,
 .structure-section,
 .report-panel {
   display: grid;
   gap: var(--kg-gap-md);
   padding: var(--kg-gap-md);
+}
+
+.settings-header {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.settings-subtitle {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
 }
 
 .page-title strong {
@@ -611,6 +627,32 @@ textarea {
 .filter-group {
   display: grid;
   gap: var(--kg-gap-xs);
+}
+
+.filter-group input,
+.filter-group select {
+  min-block-size: 2.25rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base);
+  color: var(--tui-text-primary);
+  padding: 0.5rem 0.625rem;
+}
+
+.jira-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--kg-gap-sm);
+}
+
+.jira-status {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-xs-bold);
+  text-transform: uppercase;
+}
+
+.jira-status.connected {
+  color: var(--tui-status-positive);
 }
 
 .severity-row {

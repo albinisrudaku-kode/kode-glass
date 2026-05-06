@@ -41,13 +41,15 @@
       <ul>
         <li><strong>Web page information</strong> needed for accessibility analysis—for example the page URL, page title, and document structure and content visible to the checker (such as elements, roles, labels, headings, landmarks, and detected issues).</li>
         <li><strong>Extension UI preferences</strong> stored locally in your browser (for example theme selection for the side panel via <code>localStorage</code>).</li>
+        <li><strong>Evidence artifacts</strong> (screenshots, rollback video clips, and PDF exports) that you explicitly generate. These files are created locally and saved through Chrome’s download flow.</li>
+        <li><strong>Jira OAuth session data</strong> (for example Atlassian access token metadata, refresh token, selected site, and selected project defaults) stored in <code>chrome.storage.local</code> so you can stay connected until you disconnect.</li>
       </ul>
-      <p>The Extension requests these Chrome permissions: <code>activeTab</code>, <code>sidePanel</code>, <code>scripting</code>, <code>tabs</code>, and <code>tts</code> (text-to-speech when you enable narration).</p>
+      <p>The Extension requests these Chrome permissions: <code>activeTab</code>, <code>downloads</code>, <code>identity</code>, <code>sidePanel</code>, <code>scripting</code>, <code>storage</code>, <code>tabCapture</code>, <code>tabs</code>, and <code>tts</code> (text-to-speech when you enable narration). It also requests host access for <code>https://auth.atlassian.com/*</code> and <code>https://api.atlassian.com/*</code> to perform Jira OAuth and issue creation when you choose to connect Jira.</p>
     </section>
 
     <section id="use">
       <h2>4. How we use information</h2>
-      <p>We use the information above solely to provide Extension functionality you request: displaying diagnostics in the side panel, highlighting elements on the page, generating reports in the UI, and optional narration. We do not use it for advertising profiling inside the Extension.</p>
+      <p>We use the information above solely to provide Extension functionality you request: displaying diagnostics in the side panel, highlighting elements on the page, generating reports in the UI, exporting optional evidence artifacts, creating Jira tasks when you explicitly trigger it, and optional narration. We do not use it for advertising profiling inside the Extension.</p>
     </section>
 
     <section id="sharing">
@@ -56,6 +58,7 @@
       <p><strong>Platform and embedded services:</strong></p>
       <ul>
         <li><strong>Chrome APIs:</strong> Chrome processes Extension messaging and permissions according to Google’s practices.</li>
+        <li><strong>Atlassian Jira:</strong> If you connect Jira, OAuth and Jira API requests are sent to Atlassian endpoints to authenticate your account, discover available Jira resources, and create issues/attachments that you submit from the Extension.</li>
         <li><strong>Text-to-speech:</strong> When you enable narration, the Extension uses Chrome’s <code>chrome.tts</code> API. Your device and Chrome handle synthesis and audio output.</li>
         <li><strong>Fonts:</strong> The side panel UI may request fonts from <strong>Google Fonts</strong> when the panel loads; that request is governed by Google’s terms and your network environment.</li>
         <li><strong>Documentation links:</strong> If you open external help or documentation links from scan results (for example IBM Accessibility guidance URLs shown as references), those sites apply their own privacy policies.</li>
@@ -64,7 +67,7 @@
 
     <section id="retention">
       <h2>6. Retention</h2>
-      <p>Analysis results shown in the Extension exist for your session as you use the Extension until you reset state, reload, or close the UI as applicable. Local preference storage remains until you clear extension site data or uninstall the Extension.</p>
+      <p>Analysis results shown in the Extension exist for your session as you use the Extension until you reset state, reload, or close the UI as applicable. Local preference storage and Jira OAuth session data remain until you disconnect Jira, clear extension data, or uninstall the Extension. Exported evidence files remain wherever you save them.</p>
     </section>
 
     <section id="security">

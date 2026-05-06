@@ -23,6 +23,7 @@
     "accessibility-checker-engine": "^4.0.17",
     "axe-core": "^4.11.4",
     "dom-accessibility-api": "^0.7.1",
+    "jspdf": "^4.2.1",
     "rxjs": "^7.8.2",
     "tslib": "^2.8.1",
     "zone.js": "^0.15.1"

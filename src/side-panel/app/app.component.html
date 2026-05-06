@@ -8,6 +8,18 @@
 
       <div class="header-actions">
         <button
+          class="settings-toggle"
+          appearance="secondary"
+          size="s"
+          tuiButton
+          type="button"
+          [attr.aria-label]="settingsToggleLabel()"
+          [title]="settingsToggleLabel()"
+          (click)="toggleSettingsView()"
+        >
+          <tui-icon icon="@tui.settings" />
+        </button>
+        <button
           class="theme-toggle"
           appearance="secondary"
           size="s"
@@ -22,6 +34,60 @@
       </div>
     </header>
 
+    @if (panelView() === 'settings') {
+      <section class="surface settings-panel" aria-label="Extension settings">
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <span class="settings-subtitle">Jira integration and task setup</span>
+        </div>
+
+        <div class="filter-group">
+          <span class="eyebrow">Jira account</span>
+          <div class="jira-actions">
+            @if (!state.jiraConnected()) {
+              <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.jiraPending()" (click)="connectJira()">
+                Connect Jira
+              </button>
+            } @else {
+              <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.jiraPending()" (click)="disconnectJira()">
+                Disconnect Jira
+              </button>
+            }
+            <span class="jira-status" [class.connected]="state.jiraConnected()">
+              {{ state.jiraConnected() ? 'Connected' : state.jiraSession().status === 'connecting' ? 'Connecting' : 'Disconnected' }}
+            </span>
+          </div>
+        </div>
+
+        @if (state.jiraConnected()) {
+          <div class="filter-group">
+            <span class="eyebrow">Issue target</span>
+            <select [ngModel]="state.jiraProjectKey()" (ngModelChange)="setJiraProjectKey($event)">
+              <option value="">Select project</option>
+              @for (project of state.jiraProjects(); track project.id) {
+                <option [value]="project.key">{{ project.key }} - {{ project.name }}</option>
+              }
+            </select>
+            <select [ngModel]="state.jiraIssueTypeId()" (ngModelChange)="setJiraIssueTypeId($event)">
+              <option value="">Select issue type</option>
+              @for (issueType of state.jiraIssueTypes(); track issueType.id) {
+                <option [value]="issueType.id">{{ issueType.name }}</option>
+              }
+            </select>
+            <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.jiraPending()" (click)="createJiraTask()">
+              Create Jira Task
+            </button>
+          </div>
+        }
+
+        @if (state.analysisError(); as analysisError) {
+          <section class="surface status-message status-message--error" role="alert">
+            <strong>Action issue</strong>
+            <span>{{ analysisError }}</span>
+          </section>
+        }
+      </section>
+    } @else {
     <section class="surface page-summary" aria-label="Current page">
       <div class="page-title">
         <span class="eyebrow">Current page</span>
@@ -211,6 +277,15 @@
               Download rollback
             </button>
           }
+        </div>
+
+        <div class="tool-group" aria-label="Report export">
+          <div class="filter-group">
+            <span class="eyebrow">Report export</span>
+            <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.pdfExportPending()" (click)="exportPdfReport()">
+              Export PDF
+            </button>
+          </div>
         </div>
       }
     </section>
@@ -549,6 +624,7 @@
           <span>Analyze the page to see issues, structure, and report details.</span>
         }
       </section>
+    }
     }
   </main>
 

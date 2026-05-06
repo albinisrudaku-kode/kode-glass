@@ -1,4 +1,5 @@
 const path = require('path');
+const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
@@ -7,7 +8,7 @@ const {AngularWebpackPlugin} = require('@ngtools/webpack');
 module.exports = (env, argv) => {
   const isProduction = argv.mode === 'production';
   const extensionBundleBudget = 1.5 * 1024 * 1024;
-  const taigaIcons = ['sun.svg', 'moon.svg', 'rotate-ccw.svg', 'chevron-down.svg', 'copy.svg'];
+  const taigaIcons = ['sun.svg', 'moon.svg', 'rotate-ccw.svg', 'chevron-down.svg', 'copy.svg', 'settings.svg'];
 
   return {
     mode: isProduction ? 'production' : 'development',
@@ -93,6 +94,9 @@ module.exports = (env, argv) => {
             to: `assets/taiga-ui/icons/${icon}`
           }))
         ]
+      }),
+      new webpack.DefinePlugin({
+        __ATLASSIAN_OAUTH_CLIENT_ID__: JSON.stringify(process.env.ATLASSIAN_OAUTH_CLIENT_ID || '')
       })
     ]
   };

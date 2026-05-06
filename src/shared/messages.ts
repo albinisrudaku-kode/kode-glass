@@ -6,6 +6,10 @@ import type {
   ComponentScope,
   ComponentScopeOption,
   EvidenceCaptureMode,
+  JiraAuthSession,
+  JiraIssueTypeOption,
+  JiraProjectOption,
+  JiraSiteOption,
   LayerVisibility,
   ReaderModeSettings,
   ViolationFilterSettings,
@@ -21,8 +25,16 @@ export const enum RuntimeMessageType {
   ComponentScopeChanged = 'component-scope.changed',
   ContentReady = 'content.ready',
   EvidenceImageCaptureRequested = 'evidence-image-capture.requested',
+  EvidencePdfExportRequested = 'evidence-pdf-export.requested',
   EvidenceVideoBufferToggled = 'evidence-video-buffer.toggled',
   EvidenceVideoRollbackRequested = 'evidence-video-rollback.requested',
+  JiraAuthStatusRequested = 'jira-auth-status.requested',
+  JiraConnectRequested = 'jira-connect.requested',
+  JiraDisconnectRequested = 'jira-disconnect.requested',
+  JiraIssueCreateRequested = 'jira-issue-create.requested',
+  JiraIssueTypesRequested = 'jira-issue-types.requested',
+  JiraProjectsRequested = 'jira-projects.requested',
+  JiraSitesRequested = 'jira-sites.requested',
   LayerVisibilityChanged = 'layer-visibility.changed',
   PageContextRequested = 'page-context.requested',
   PanelOpened = 'side-panel.opened',
@@ -112,6 +124,15 @@ export interface EvidenceImageCaptureResponse {
   readonly snapshot?: CaptureBoundsSnapshot;
 }
 
+export interface EvidencePdfExportRequestPayload {
+  readonly includeEvidenceImages: boolean;
+}
+
+export type EvidencePdfExportRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.EvidencePdfExportRequested,
+  EvidencePdfExportRequestPayload
+>;
+
 export interface EvidenceVideoBufferTogglePayload {
   readonly enabled: boolean;
 }
@@ -138,6 +159,93 @@ export type EvidenceVideoRollbackRequestedMessage = MessageEnvelope<
 export interface EvidenceVideoRollbackResponse {
   readonly error?: string;
   readonly ok: boolean;
+}
+
+export type JiraAuthStatusRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraAuthStatusRequested,
+  Record<string, never>
+>;
+
+export interface JiraConnectRequestPayload {
+  readonly clientId: string;
+}
+
+export type JiraConnectRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraConnectRequested,
+  JiraConnectRequestPayload
+>;
+
+export type JiraDisconnectRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraDisconnectRequested,
+  Record<string, never>
+>;
+
+export interface JiraIssueCreateRequestPayload {
+  readonly description: string;
+  readonly evidenceImageDataUrls: readonly string[];
+  readonly issueTypeId: string;
+  readonly projectKey: string;
+  readonly summary: string;
+}
+
+export type JiraIssueCreateRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraIssueCreateRequested,
+  JiraIssueCreateRequestPayload
+>;
+
+export type JiraIssueTypesRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraIssueTypesRequested,
+  {readonly projectKey: string}
+>;
+
+export type JiraProjectsRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraProjectsRequested,
+  Record<string, never>
+>;
+
+export type JiraSitesRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.JiraSitesRequested,
+  Record<string, never>
+>;
+
+export interface JiraAuthStatusResponse {
+  readonly session: JiraAuthSession;
+}
+
+export interface JiraConnectResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+  readonly session?: JiraAuthSession;
+}
+
+export interface JiraDisconnectResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+}
+
+export interface JiraIssueCreateResponse {
+  readonly error?: string;
+  readonly issueKey?: string;
+  readonly issueUrl?: string;
+  readonly ok: boolean;
+}
+
+export interface JiraIssueTypesResponse {
+  readonly error?: string;
+  readonly issueTypes: readonly JiraIssueTypeOption[];
+  readonly ok: boolean;
+}
+
+export interface JiraProjectsResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+  readonly projects: readonly JiraProjectOption[];
+}
+
+export interface JiraSitesResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+  readonly sites: readonly JiraSiteOption[];
 }
 
 export type ActiveNodeChangedMessage = MessageEnvelope<
@@ -225,8 +333,16 @@ export type RuntimeMessage =
   | ComponentScopeChangedMessage
   | ContentReadyMessage
   | EvidenceImageCaptureRequestedMessage
+  | EvidencePdfExportRequestedMessage
   | EvidenceVideoBufferToggledMessage
   | EvidenceVideoRollbackRequestedMessage
+  | JiraAuthStatusRequestedMessage
+  | JiraConnectRequestedMessage
+  | JiraDisconnectRequestedMessage
+  | JiraIssueCreateRequestedMessage
+  | JiraIssueTypesRequestedMessage
+  | JiraProjectsRequestedMessage
+  | JiraSitesRequestedMessage
   | LayerVisibilityChangedMessage
   | PageContextRequestedMessage
   | PanelOpenedMessage

@@ -7,6 +7,7 @@ import type {AuditStandard, ComponentScopeOption, EvidenceCaptureMode, LayerName
 import {SidePanelStateService, type PreviewMode, type ViolationGroup} from './side-panel-state.service';
 
 type PanelTab = 'violations' | 'structure' | 'report';
+type PanelView = 'main' | 'settings';
 type Theme = 'light' | 'dark';
 type LayerFilterItem = 'Errors' | 'Landmarks' | 'Focus';
 type RollbackMinutes = 1 | 3 | 5;
@@ -82,9 +83,11 @@ export class AppComponent {
   protected readonly evidenceCaptureMode = signal<EvidenceCaptureMode>('full-screen');
   protected readonly rollbackMinutes = signal<RollbackMinutes>(1);
   protected readonly theme = signal<Theme>(getStoredTheme());
+  protected readonly panelView = signal<PanelView>('main');
   protected readonly themeIcon = computed(() => this.theme() === 'light' ? '@tui.sun' : '@tui.moon');
   protected readonly themeLabel = computed(() => this.theme() === 'light' ? 'Light' : 'Dark');
   protected readonly themeToggleLabel = computed(() => `Switch to ${this.theme() === 'light' ? 'dark' : 'light'} theme`);
+  protected readonly settingsToggleLabel = computed(() => this.panelView() === 'settings' ? 'Close settings' : 'Open settings');
   protected readonly previewMode = computed<PreviewMode>(() => {
     const readerMode = this.state.readerMode();
 
@@ -409,6 +412,30 @@ export class AppComponent {
     void this.state.downloadVideoRollback(this.rollbackMinutes());
   }
 
+  protected setJiraProjectKey(projectKey: string | null): void {
+    this.state.setJiraProjectKey(projectKey ?? '');
+  }
+
+  protected setJiraIssueTypeId(issueTypeId: string | null): void {
+    this.state.setJiraIssueTypeId(issueTypeId ?? '');
+  }
+
+  protected connectJira(): void {
+    void this.state.connectJira();
+  }
+
+  protected disconnectJira(): void {
+    void this.state.disconnectJira();
+  }
+
+  protected createJiraTask(): void {
+    void this.state.createIssueFromCurrentContext();
+  }
+
+  protected exportPdfReport(): void {
+    void this.state.exportPdfReport();
+  }
+
   protected setReaderSpeech(speak: boolean): void {
     this.state.setReaderSpeech(speak);
   }
@@ -425,6 +452,10 @@ export class AppComponent {
 
       return nextTheme;
     });
+  }
+
+  protected toggleSettingsView(): void {
+    this.panelView.update(view => view === 'main' ? 'settings' : 'main');
   }
 
   protected selectTab(tab: PanelTab): void {
