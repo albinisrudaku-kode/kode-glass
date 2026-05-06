@@ -144,7 +144,7 @@ function installNavigationWatcher(pageOverlay: PageOverlay, navigationState: Con
 function wrapHistoryNavigation(methodName: 'pushState' | 'replaceState', onNavigation: () => void): void {
   const originalMethod = history[methodName];
 
-  history[methodName] = function patchedHistoryMethod(...args: Parameters<typeof originalMethod>): ReturnType<typeof originalMethod> {
+  history[methodName] = function patchedHistoryMethod(this: History, ...args: Parameters<typeof originalMethod>): ReturnType<typeof originalMethod> {
     const result = originalMethod.apply(this, args);
     queueMicrotask(onNavigation);
 
