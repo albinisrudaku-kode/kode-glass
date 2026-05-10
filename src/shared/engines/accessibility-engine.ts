@@ -11,6 +11,7 @@ import {collectHeadings, collectLandmarks} from './dom-summary';
 import {analyzeWithIbmEqualAccess} from './ibm-equal-access-engine';
 import {collectAccessibilityScanScopes, toScanScopeSummaries, type AccessibilityScanScope} from './scan-scopes';
 import {createWcagCoverage, enrichViolationsWithWcagCriteria} from '../wcag-coverage';
+import {logger} from '../logger';
 
 interface EngineRunResult {
   readonly status: AccessibilityEngineStatus;
@@ -65,7 +66,7 @@ async function analyzeEngine(
       violations,
     };
   } catch (error) {
-    console.warn(`${label} analysis failed`, error);
+    logger.warn(`${label} analysis failed, error: ${getErrorMessage(error)}`);
 
     return {
       status: {

@@ -1,4 +1,5 @@
 import {computed, Injectable, signal} from '@angular/core';
+import {getErrorMessage} from '../../shared/error-boundary';
 import type {
   AccessibilityReport,
   AccessibleNodeSummary,
@@ -8,14 +9,14 @@ import type {
   ComponentScope,
   ComponentScopeOption,
   EvidenceCaptureMode,
-  JiraAuthSession,
-  JiraIssueTypeOption,
-  JiraProjectOption,
   KodeGlassViolation,
   LayerName,
   LayerVisibility,
+  NarratorCommandProfile,
+  NarratorInterruptPolicy,
+  NarratorKeyboardMode,
+  NarratorVerbosity,
   ReaderModeSettings,
-  SeverityVisibility,
   ViolationEngineFilter,
   ViolationFilterSettings,
   ViolationSeverity,
@@ -25,65 +26,57 @@ import type {
 import {
   RuntimeMessageType,
   type EvidenceImageCaptureResponse,
-  type JiraAuthStatusResponse,
-  type JiraConnectResponse,
-  type JiraDisconnectResponse,
-  type JiraIssueCreateResponse,
-  type JiraIssueTypesResponse,
-  type JiraProjectsResponse,
   type RuntimeMessage,
   type ViolationSelectedPayload,
 } from '../../shared/messages';
-import {pickDefaultReaderVoice} from '../../shared/reader-voice';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../../shared/violation-filters';
 import {createWcagCoverage} from '../../shared/wcag-coverage';
-import {buildFilteredReportPdf, type PdfEvidenceImage} from './report-pdf';
+import {
+  type CoveragePrincipleSummary,
+  type PreviewMode,
+  type ViolationGroup,
+  createViolationFix,
+  formatAuditStandard,
+  formatCoverageStatus,
+  formatViolationEngines,
+  getHighestSeverity,
+  getReadableGuidance,
+  getReadableSummary,
+  getSeverityRank,
+  wait,
+} from './violation-grouping';
+import {JiraService} from './jira.service';
+import {VoiceService} from './voice.service';
+import {PdfService} from './pdf.service';
 
-declare const __ATLASSIAN_OAUTH_CLIENT_ID__: string;
+export type {CoveragePrincipleSummary, PreviewMode, ViolationFix, ViolationFixSegment, ViolationGroup} from './violation-grouping';
+export type {ReaderVoiceOption} from './voice.service';
 
-export interface ViolationGroup {
-  readonly count: number;
-  readonly description?: string;
-  readonly engineLabel: string;
-  readonly fix?: ViolationFix;
-  readonly guidance?: string;
-  readonly helpUrl?: string;
-  readonly id: string;
-  readonly ruleId: string;
-  readonly selectors: readonly string[];
-  readonly severity: ViolationSeverity;
+export interface JiraIssueComposerOptions {
+  readonly includeAppliedFilters: boolean;
+  readonly includeEvidenceImage: boolean;
+  readonly includeFilteredFindings: boolean;
+  readonly includeFocusedViolation: boolean;
+  readonly includePageMetadata: boolean;
+  readonly includePdfReportGuidance: boolean;
+  readonly includeReportMarkdown: boolean;
+  readonly includeRollbackVideoGuidance: boolean;
+  readonly includeStructureSnapshot: boolean;
+  readonly maxFindings: number;
+  readonly rollbackWindowMinutes: number;
+}
+
+export interface JiraIssueDraft {
+  readonly canCreate: boolean;
+  readonly description: string;
   readonly summary: string;
-  readonly title: string;
-  readonly violationIds: readonly string[];
 }
 
-export interface ViolationFix {
-  readonly segments: readonly ViolationFixSegment[];
-  readonly text: string;
+export interface JiraIssueRelationOptions {
+  readonly linkIssueKey?: string;
+  readonly linkTypeName?: string;
+  readonly parentIssueKey?: string;
 }
-
-export interface ViolationFixSegment {
-  readonly kind: 'chip' | 'text';
-  readonly text: string;
-}
-
-export interface CoveragePrincipleSummary {
-  readonly failed: number;
-  readonly manual: number;
-  readonly passed: number;
-  readonly principle: WcagCoverageItem['principle'];
-  readonly total: number;
-}
-
-export interface ReaderVoiceOption {
-  readonly label: string;
-  readonly lang: string;
-  readonly localService: boolean;
-  readonly name: string;
-  readonly voiceURI: string;
-}
-
-export type PreviewMode = 'off' | 'reader' | 'inspect';
 
 const initialLayerVisibility: LayerVisibility = {
   coverage: false,
@@ -98,19 +91,22 @@ const initialAuditSettings: AuditSettings = {
 };
 
 const initialReaderMode: ReaderModeSettings = {
+  commandProfile: /mac/i.test(navigator.platform) ? 'voiceover' : 'hybrid',
   enabled: false,
+  interruptPolicy: 'coalesce',
   inspectWithMouse: false,
+  keyboardMode: 'strict-capture',
   lockInteractions: false,
+  narratorEngineEnabled: true,
   rate: 0.92,
   speak: false,
+  verbosity: 'medium',
 };
 
 const sidePanelPortName = 'kode-glass-side-panel';
 const rollbackChunkTimesliceMs = 1000;
 const rollbackMaxWindowMs = 5 * 60 * 1000;
-const pdfFindingEvidenceLimit = 36;
 const sidePanelCaptureCooldownMs = 650;
-const jiraDefaultClientId = (__ATLASSIAN_OAUTH_CLIENT_ID__ || '').trim();
 
 interface VideoRollbackChunk {
   readonly blob: Blob;
@@ -124,12 +120,12 @@ export class SidePanelStateService {
   private panelPort: chrome.runtime.Port | undefined;
   private sessionTabId: number | undefined;
   private analysisLoadingTimeout: ReturnType<typeof setTimeout> | undefined;
-  private detachVoicesChangedListener: (() => void) | undefined;
   private lastEvidenceCaptureAt = 0;
   private navigationAnalysisTimeout: ReturnType<typeof setTimeout> | undefined;
   private videoRollbackChunks: VideoRollbackChunk[] = [];
   private videoRollbackRecorder: MediaRecorder | undefined;
   private videoRollbackStream: MediaStream | undefined;
+  private suspendedLayerVisibility: LayerVisibility | null = null;
   private readonly activeNodeSignal = signal<AccessibleNodeSummary | null>(null);
   private readonly analysisErrorSignal = signal<string | null>(null);
   private readonly analysisLoadingSignal = signal(false);
@@ -144,17 +140,26 @@ export class SidePanelStateService {
   private readonly selectedComponentScopeSignal = signal<ComponentScope | null>(null);
   private readonly selectedViolationSignal = signal<ViolationSelectedPayload | null>(null);
   private readonly violationFilterSettingsSignal = signal<ViolationFilterSettings>(initialViolationFilterSettings);
-  private readonly voiceOptionsSignal = signal<readonly ReaderVoiceOption[]>([]);
   private readonly violationsSignal = signal<readonly AccessibilityReport['violations'][number][]>([]);
   private readonly videoBufferEnabledSignal = signal(false);
-  private readonly jiraSessionSignal = signal<JiraAuthSession>({status: 'disconnected'});
-  private readonly jiraClientIdSignal = signal('');
-  private readonly jiraProjectsSignal = signal<readonly JiraProjectOption[]>([]);
-  private readonly jiraIssueTypesSignal = signal<readonly JiraIssueTypeOption[]>([]);
-  private readonly jiraProjectKeySignal = signal('');
-  private readonly jiraIssueTypeIdSignal = signal('');
-  private readonly jiraPendingSignal = signal(false);
-  private readonly pdfExportPendingSignal = signal(false);
+  private readonly jiraService = new JiraService({
+    getSessionTabId: () => this.getSessionTabId(),
+    setError: error => this.analysisErrorSignal.set(error),
+  });
+  private readonly pdfService = new PdfService({
+    getPageReport: () => this.pageReport(),
+    getVisibleViolations: () => this.visibleViolations(),
+    getSelectedViolation: () => this.selectedViolation(),
+    getSelectedComponentScope: () => this.selectedComponentScope(),
+    getViolationFilterSettings: () => this.violationFilterSettings(),
+    captureEvidenceImageData: (mode, options) => this.captureEvidenceImageData(mode, options),
+    sendRuntimeMessage: message => this.sendRuntimeMessage(message),
+    setError: error => this.analysisErrorSignal.set(error),
+  });
+  private readonly voiceService = new VoiceService({
+    getReaderMode: () => this.readerMode(),
+    commitReaderMode: readerMode => this.commitReaderMode(readerMode),
+  });
 
   readonly activeNode = this.activeNodeSignal.asReadonly();
   readonly analysisError = this.analysisErrorSignal.asReadonly();
@@ -172,19 +177,19 @@ export class SidePanelStateService {
   readonly severityVisibility = computed(() => this.violationFilterSettings().severity);
   readonly violationEngineFilter = computed(() => this.violationFilterSettings().engine);
   readonly violationFilterSettings = this.violationFilterSettingsSignal.asReadonly();
-  readonly voiceOptions = this.voiceOptionsSignal.asReadonly();
+  readonly voiceOptions = this.voiceService.voiceOptions;
   readonly violations = this.violationsSignal.asReadonly();
   readonly videoBufferEnabled = this.videoBufferEnabledSignal.asReadonly();
-  readonly jiraSession = this.jiraSessionSignal.asReadonly();
-  readonly jiraClientId = this.jiraClientIdSignal.asReadonly();
-  readonly jiraProjects = this.jiraProjectsSignal.asReadonly();
-  readonly jiraIssueTypes = this.jiraIssueTypesSignal.asReadonly();
-  readonly jiraProjectKey = this.jiraProjectKeySignal.asReadonly();
-  readonly jiraIssueTypeId = this.jiraIssueTypeIdSignal.asReadonly();
-  readonly jiraPending = this.jiraPendingSignal.asReadonly();
-  readonly pdfExportPending = this.pdfExportPendingSignal.asReadonly();
-  readonly jiraConnected = computed(() => this.jiraSession().status === 'connected');
-  readonly jiraOauthConfigured = computed(() => Boolean(this.resolveConfiguredJiraClientId()));
+  readonly jiraSession = this.jiraService.session;
+  readonly jiraClientId = this.jiraService.clientId;
+  readonly jiraProjects = this.jiraService.projects;
+  readonly jiraIssueTypes = this.jiraService.issueTypes;
+  readonly jiraProjectKey = this.jiraService.projectKey;
+  readonly jiraIssueTypeId = this.jiraService.issueTypeId;
+  readonly jiraPending = this.jiraService.pending;
+  readonly pdfExportPending = this.pdfService.pdfExportPending;
+  readonly jiraConnected = this.jiraService.connected;
+  readonly jiraOauthConfigured = this.jiraService.oauthConfigured;
   readonly availableSeverityCounts = computed(() => this.createSeverityCounts(this.createVisibleViolations({includeSeverityFilter: false})));
   readonly engineStatuses = computed(() => this.pageReport()?.engineStatuses ?? []);
   readonly coverage = computed(() => this.createSourceFilteredCoverage());
@@ -209,7 +214,7 @@ export class SidePanelStateService {
   readonly totalHeadings = computed(() => this.headings().length);
   readonly totalLandmarks = computed(() => this.landmarks().length);
   readonly totalOverlayScopes = computed(() => this.overlayScanScopes().length);
-  readonly totalViolations = computed(() => this.violations().length);
+  readonly totalViolations = computed(() => this.createVisibleViolations({includeSeverityFilter: false}).length);
   readonly violationGroups = computed(() => this.createViolationGroups(this.visibleViolations()));
   readonly topViolationGroups = computed(() => this.violationGroups().slice(0, 6));
   readonly visibleViolationGroups = computed(() => this.createViolationGroups());
@@ -228,8 +233,8 @@ export class SidePanelStateService {
       this.announcePanelOpened();
       this.ensureVideoBufferEnabled(true);
     });
-    void this.initializeJiraState();
-    this.loadVoiceOptions();
+    void this.jiraService.initializeState();
+    this.voiceService.loadVoiceOptions();
     this.connected = true;
   }
 
@@ -246,7 +251,7 @@ export class SidePanelStateService {
     this.clearNavigationAnalysisTimeout();
     this.finishAnalysisLoading();
     this.commitReaderMode(initialReaderMode);
-    window.speechSynthesis?.cancel();
+    this.voiceService.cancelSpeech();
     this.activeNodeSignal.set(null);
     this.analysisErrorSignal.set(null);
     this.pageReportSignal.set(null);
@@ -264,7 +269,7 @@ export class SidePanelStateService {
     this.resetAnalysis();
     this.stopLocalVideoBuffer();
     this.videoBufferEnabledSignal.set(false);
-    this.teardownVoiceOptionsListener();
+    this.voiceService.teardownListener();
     this.disconnectPanelPort();
   }
 
@@ -408,7 +413,7 @@ export class SidePanelStateService {
     this.commitReaderMode({
       ...readerMode,
       enabled: readerMode.enabled || speak,
-      inspectWithMouse: readerMode.inspectWithMouse,
+      inspectWithMouse: speak ? false : readerMode.inspectWithMouse,
       rate: readerMode.rate ?? initialReaderMode.rate,
       speak,
     });
@@ -432,8 +437,82 @@ export class SidePanelStateService {
 
     this.commitReaderMode({
       ...readerMode,
+      interruptPolicy: readerMode.interruptPolicy ?? initialReaderMode.interruptPolicy,
+      keyboardMode: readerMode.keyboardMode ?? initialReaderMode.keyboardMode,
       rate,
       speak: readerMode.speak,
+      verbosity: readerMode.verbosity ?? initialReaderMode.verbosity,
+    });
+  }
+
+  setNarratorKeyboardMode(keyboardMode: NarratorKeyboardMode): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      ...readerMode,
+      interruptPolicy: readerMode.interruptPolicy ?? initialReaderMode.interruptPolicy,
+      keyboardMode,
+      narratorEngineEnabled: readerMode.narratorEngineEnabled ?? initialReaderMode.narratorEngineEnabled,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
+      verbosity: readerMode.verbosity ?? initialReaderMode.verbosity,
+    });
+  }
+
+  setNarratorCommandProfile(commandProfile: NarratorCommandProfile): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      ...readerMode,
+      commandProfile,
+      interruptPolicy: readerMode.interruptPolicy ?? initialReaderMode.interruptPolicy,
+      keyboardMode: readerMode.keyboardMode ?? initialReaderMode.keyboardMode,
+      narratorEngineEnabled: readerMode.narratorEngineEnabled ?? initialReaderMode.narratorEngineEnabled,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
+      verbosity: readerMode.verbosity ?? initialReaderMode.verbosity,
+    });
+  }
+
+  setNarratorVerbosity(verbosity: NarratorVerbosity): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      ...readerMode,
+      interruptPolicy: readerMode.interruptPolicy ?? initialReaderMode.interruptPolicy,
+      keyboardMode: readerMode.keyboardMode ?? initialReaderMode.keyboardMode,
+      narratorEngineEnabled: readerMode.narratorEngineEnabled ?? initialReaderMode.narratorEngineEnabled,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
+      verbosity,
+    });
+  }
+
+  setNarratorInterruptPolicy(interruptPolicy: NarratorInterruptPolicy): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      ...readerMode,
+      interruptPolicy,
+      keyboardMode: readerMode.keyboardMode ?? initialReaderMode.keyboardMode,
+      narratorEngineEnabled: readerMode.narratorEngineEnabled ?? initialReaderMode.narratorEngineEnabled,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
+      verbosity: readerMode.verbosity ?? initialReaderMode.verbosity,
+    });
+  }
+
+  setNarratorEngineEnabled(narratorEngineEnabled: boolean): void {
+    const readerMode = this.readerMode();
+
+    this.commitReaderMode({
+      ...readerMode,
+      interruptPolicy: readerMode.interruptPolicy ?? initialReaderMode.interruptPolicy,
+      keyboardMode: readerMode.keyboardMode ?? initialReaderMode.keyboardMode,
+      narratorEngineEnabled,
+      rate: readerMode.rate ?? initialReaderMode.rate,
+      speak: readerMode.speak,
+      verbosity: readerMode.verbosity ?? initialReaderMode.verbosity,
     });
   }
 
@@ -536,86 +615,27 @@ export class SidePanelStateService {
   }
 
   setJiraProjectKey(projectKey: string): void {
-    this.jiraProjectKeySignal.set(projectKey);
-    this.jiraIssueTypeIdSignal.set('');
-    this.jiraIssueTypesSignal.set([]);
-    void this.refreshJiraIssueTypes(projectKey);
+    this.jiraService.setProjectKey(projectKey);
   }
 
   setJiraIssueTypeId(issueTypeId: string): void {
-    this.jiraIssueTypeIdSignal.set(issueTypeId);
+    this.jiraService.setIssueTypeId(issueTypeId);
   }
 
   async connectJira(): Promise<void> {
-    const clientId = this.resolveConfiguredJiraClientId();
     const lockedSessionTabId = this.sessionTabId;
 
-    if (!clientId) {
-      this.analysisErrorSignal.set('Jira OAuth client ID is missing. Set ATLASSIAN_OAUTH_CLIENT_ID and rebuild the extension.');
+    await this.jiraService.connect();
 
-      return;
-    }
-
-    this.jiraPendingSignal.set(true);
-    this.analysisErrorSignal.set(null);
-    this.jiraSessionSignal.set({status: 'connecting'});
-
-    try {
-      const response = await chrome.runtime.sendMessage({
-        payload: {clientId},
-        tabId: await this.getSessionTabId(),
-        type: RuntimeMessageType.JiraConnectRequested,
-      }) as JiraConnectResponse;
-
-      if (!response.ok || !response.session) {
-        this.jiraSessionSignal.set({error: response.error, status: 'disconnected'});
-        this.analysisErrorSignal.set(response.error ?? 'Failed to connect Jira.');
-
-        return;
-      }
-
-      this.jiraSessionSignal.set(response.session);
-      await this.refreshJiraProjects();
-    } catch (error) {
-      this.jiraSessionSignal.set({error: getErrorMessage(error), status: 'disconnected'});
-      this.analysisErrorSignal.set(`Failed to connect Jira: ${getErrorMessage(error)}`);
-    } finally {
-      if (lockedSessionTabId !== undefined && this.sessionTabId !== lockedSessionTabId) {
-        this.sessionTabId = lockedSessionTabId;
-        this.updatePanelPortTab(lockedSessionTabId);
-        this.announcePanelOpened();
-      }
-      this.jiraPendingSignal.set(false);
+    if (lockedSessionTabId !== undefined && this.sessionTabId !== lockedSessionTabId) {
+      this.sessionTabId = lockedSessionTabId;
+      this.updatePanelPortTab(lockedSessionTabId);
+      this.announcePanelOpened();
     }
   }
 
   async disconnectJira(): Promise<void> {
-    this.jiraPendingSignal.set(true);
-    this.analysisErrorSignal.set(null);
-
-    try {
-      const response = await chrome.runtime.sendMessage({
-        payload: {},
-        tabId: await this.getSessionTabId(),
-        type: RuntimeMessageType.JiraDisconnectRequested,
-      }) as JiraDisconnectResponse;
-
-      if (!response.ok) {
-        this.analysisErrorSignal.set(response.error ?? 'Failed to disconnect Jira.');
-
-        return;
-      }
-
-      this.jiraSessionSignal.set({status: 'disconnected'});
-      this.jiraProjectsSignal.set([]);
-      this.jiraIssueTypesSignal.set([]);
-      this.jiraProjectKeySignal.set('');
-      this.jiraIssueTypeIdSignal.set('');
-    } catch (error) {
-      this.analysisErrorSignal.set(`Failed to disconnect Jira: ${getErrorMessage(error)}`);
-    } finally {
-      this.jiraPendingSignal.set(false);
-    }
+    await this.jiraService.disconnect();
   }
 
   async createIssueFromCurrentContext(): Promise<void> {
@@ -625,133 +645,84 @@ export class SidePanelStateService {
       return;
     }
 
-    const projectKey = this.jiraProjectKey();
-    const issueTypeId = this.jiraIssueTypeId();
+    const draft = this.buildJiraIssueDraft({
+      includeAppliedFilters: true,
+      includeEvidenceImage: true,
+      includeFilteredFindings: true,
+      includeFocusedViolation: true,
+      includePageMetadata: true,
+      includePdfReportGuidance: false,
+      includeReportMarkdown: false,
+      includeRollbackVideoGuidance: false,
+      includeStructureSnapshot: false,
+      maxFindings: 20,
+      rollbackWindowMinutes: 1,
+    });
+    const evidenceImageData = await this.captureEvidenceImageData('full-screen');
 
-    if (!projectKey || !issueTypeId) {
-      this.analysisErrorSignal.set('Select a Jira project and issue type first.');
+    await this.jiraService.createIssue({
+      description: draft.description,
+      evidenceImageDataUrls: evidenceImageData ? [evidenceImageData] : [],
+      issueTypeId: this.jiraIssueTypeId(),
+      projectKey: this.jiraProjectKey(),
+      summary: draft.summary,
+    });
+  }
+
+  async createIssueFromDraft(options: JiraIssueComposerOptions, relations: JiraIssueRelationOptions = {}): Promise<void> {
+    if (!this.jiraConnected()) {
+      this.analysisErrorSignal.set('Connect Jira before creating a task.');
 
       return;
     }
 
-    this.jiraPendingSignal.set(true);
-    this.analysisErrorSignal.set(null);
+    const draft = this.buildJiraIssueDraft(options);
 
-    try {
-      const evidenceImageData = await this.captureEvidenceImageData('full-screen');
-      const summary = this.buildJiraIssueSummary();
-      const description = this.buildJiraIssueDescription();
-      const response = await chrome.runtime.sendMessage({
-        payload: {
-          description,
-          evidenceImageDataUrls: evidenceImageData ? [evidenceImageData] : [],
-          issueTypeId,
-          projectKey,
-          summary,
-        },
-        tabId: await this.getSessionTabId(),
-        type: RuntimeMessageType.JiraIssueCreateRequested,
-      }) as JiraIssueCreateResponse;
+    if (!draft.canCreate) {
+      this.analysisErrorSignal.set('Select a Jira project and issue type before creating a task.');
 
-      if (!response.ok || !response.issueKey) {
-        this.analysisErrorSignal.set(response.error ?? 'Unable to create Jira task.');
-
-        return;
-      }
-
-      this.analysisErrorSignal.set(`Created Jira task ${response.issueKey}.`);
-    } catch (error) {
-      this.analysisErrorSignal.set(`Unable to create Jira task: ${getErrorMessage(error)}`);
-    } finally {
-      this.jiraPendingSignal.set(false);
+      return;
     }
+
+    const evidenceImageData = options.includeEvidenceImage ? await this.captureEvidenceImageData('full-screen') : null;
+
+    await this.jiraService.createIssue({
+      description: draft.description,
+      evidenceImageDataUrls: evidenceImageData ? [evidenceImageData] : [],
+      issueTypeId: this.jiraIssueTypeId(),
+      linkIssueKey: normalizeJiraIssueKey(relations.linkIssueKey),
+      linkTypeName: relations.linkTypeName?.trim() || undefined,
+      parentIssueKey: normalizeJiraIssueKey(relations.parentIssueKey),
+      projectKey: this.jiraProjectKey(),
+      summary: draft.summary,
+    });
+  }
+
+  async buildJiraPreviewAssets(options: JiraIssueComposerOptions): Promise<{
+    readonly imageDataUrl: string | null;
+    readonly videoPreviewUrl: string | null;
+  }> {
+    const imageDataUrl = options.includeEvidenceImage
+      ? await this.captureEvidenceImageData('full-screen', {silent: true, throttled: true})
+      : null;
+    const rollbackVideoBlob = options.includeRollbackVideoGuidance ? this.createRollbackVideoBlob(options.rollbackWindowMinutes) : null;
+
+    return {
+      imageDataUrl,
+      videoPreviewUrl: rollbackVideoBlob ? URL.createObjectURL(rollbackVideoBlob) : null,
+    };
+  }
+
+  buildJiraIssueDraft(options: JiraIssueComposerOptions): JiraIssueDraft {
+    return {
+      canCreate: Boolean(this.jiraConnected() && this.jiraProjectKey() && this.jiraIssueTypeId()),
+      description: this.buildJiraIssueDescription(options),
+      summary: this.buildJiraIssueSummary(options),
+    };
   }
 
   async exportPdfReport(): Promise<void> {
-    const report = this.pageReport();
-
-    if (!report || this.pdfExportPending()) {
-      return;
-    }
-
-    this.analysisErrorSignal.set(null);
-    this.pdfExportPendingSignal.set(true);
-
-    try {
-      const visibleViolations = this.visibleViolations();
-      const evidenceImages: PdfEvidenceImage[] = [];
-      const fullScreenImage = await this.captureEvidenceImageData('full-screen', {silent: true, throttled: true});
-
-      if (fullScreenImage) {
-        evidenceImages.push({caption: 'Full page snapshot', dataUrl: fullScreenImage});
-      }
-
-      const findingEvidence = await this.captureFindingEvidenceImages(visibleViolations, pdfFindingEvidenceLimit);
-      evidenceImages.push(...findingEvidence);
-
-      const pdfBlob = await buildFilteredReportPdf({
-        createdAt: Date.now(),
-        evidenceImages,
-        focusedViolationId: this.selectedViolation()?.violationId,
-        report,
-        selectedComponentLabel: this.selectedComponentScope()?.label,
-        violationFilters: this.violationFilterSettings(),
-        visibleViolations,
-      });
-      const objectUrl = URL.createObjectURL(pdfBlob);
-
-      try {
-        await chrome.downloads.download({
-          filename: `kode-glass-report-${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`,
-          saveAs: true,
-          url: objectUrl,
-        });
-      } finally {
-        setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
-      }
-    } catch (error) {
-      this.analysisErrorSignal.set(`Unable to export PDF report: ${getErrorMessage(error)}`);
-    } finally {
-      this.pdfExportPendingSignal.set(false);
-    }
-  }
-
-  private async captureFindingEvidenceImages(
-    violations: readonly KodeGlassViolation[],
-    maxImages: number,
-  ): Promise<readonly PdfEvidenceImage[]> {
-    if (!violations.length || maxImages <= 0) {
-      return [];
-    }
-
-    const previousFocus = this.selectedViolation();
-    const evidenceImages: PdfEvidenceImage[] = [];
-    const rankedViolations = selectEvidenceViolations(violations, maxImages);
-
-    try {
-      for (const [index, violation] of rankedViolations.entries()) {
-        this.sendRuntimeMessage({
-          payload: {selector: violation.selector, violationId: violation.id},
-          type: RuntimeMessageType.ViolationFocusChanged,
-        });
-        await wait(250);
-        const elementSnapshot = await this.captureEvidenceImageData('element', {silent: true, throttled: true});
-
-        if (!elementSnapshot) {
-          continue;
-        }
-
-        evidenceImages.push({
-          caption: `${index + 1}. ${getReadableSummary(violation)} (${violation.severity})`,
-          dataUrl: elementSnapshot,
-          violationId: violation.id,
-        });
-      }
-    } finally {
-      this.sendRuntimeMessage({payload: previousFocus, type: RuntimeMessageType.ViolationFocusChanged});
-    }
-
-    return evidenceImages;
+    return this.pdfService.exportReport();
   }
 
   toggleLayer(layerName: LayerName): void {
@@ -772,14 +743,26 @@ export class SidePanelStateService {
   }
 
   setLayerVisibility(layerVisibility: LayerVisibility): void {
-    this.layerVisibilitySignal.set({
+    const nextLayerVisibility = {
       ...layerVisibility,
-    });
+    };
+    const readerMode = this.readerMode();
+    const shouldDisablePreview = this.hasAnalysisOverlayVisible(nextLayerVisibility)
+      && (readerMode.enabled || readerMode.inspectWithMouse);
 
-    this.sendRuntimeMessage({
-      payload: this.layerVisibility(),
-      type: RuntimeMessageType.LayerVisibilityChanged,
-    });
+    if (shouldDisablePreview) {
+      this.suspendedLayerVisibility = null;
+      this.commitReaderMode({
+        ...readerMode,
+        enabled: false,
+        inspectWithMouse: false,
+        lockInteractions: false,
+        rate: readerMode.rate ?? initialReaderMode.rate,
+        speak: false,
+      });
+    }
+
+    this.applyLayerVisibility(nextLayerVisibility);
   }
 
   togglePageOverlay(): void {
@@ -860,8 +843,48 @@ export class SidePanelStateService {
   }
 
   private commitReaderMode(readerMode: ReaderModeSettings): void {
+    if (readerMode.enabled || readerMode.inspectWithMouse) {
+      const layerVisibility = this.layerVisibility();
+
+      if (layerVisibility.pageOverlay) {
+        if (!this.suspendedLayerVisibility) {
+          this.suspendedLayerVisibility = {
+            ...layerVisibility,
+          };
+        }
+
+        this.applyLayerVisibility({
+          ...layerVisibility,
+          pageOverlay: false,
+        });
+      }
+    } else if (this.suspendedLayerVisibility) {
+      this.applyLayerVisibility(this.suspendedLayerVisibility);
+      this.suspendedLayerVisibility = null;
+    }
+
     this.readerModeSignal.set(readerMode);
     this.sendRuntimeMessage({payload: readerMode, type: RuntimeMessageType.ReaderModeChanged});
+  }
+
+  private applyLayerVisibility(layerVisibility: LayerVisibility): void {
+    this.layerVisibilitySignal.set({
+      ...layerVisibility,
+    });
+
+    this.sendRuntimeMessage({
+      payload: this.layerVisibility(),
+      type: RuntimeMessageType.LayerVisibilityChanged,
+    });
+  }
+
+  private hasAnalysisOverlayVisible(layerVisibility: LayerVisibility): boolean {
+    return layerVisibility.pageOverlay && (
+      layerVisibility.coverage
+      || layerVisibility.errors
+      || layerVisibility.focusPath
+      || layerVisibility.landmarks
+    );
   }
 
   private sendViolationFiltersChanged(): void {
@@ -900,6 +923,7 @@ export class SidePanelStateService {
     this.videoBufferEnabledSignal.set(false);
     this.violationFilterSettingsSignal.set(initialViolationFilterSettings);
     this.layerVisibilitySignal.set(initialLayerVisibility);
+    this.suspendedLayerVisibility = null;
   }
 
   private scheduleNavigationAnalysis(): void {
@@ -921,71 +945,6 @@ export class SidePanelStateService {
     }
 
     void this.setVideoBufferEnabled(true, {silent});
-  }
-
-  private async initializeJiraState(): Promise<void> {
-    this.jiraClientIdSignal.set(jiraDefaultClientId);
-    const status = await chrome.runtime.sendMessage({
-      payload: {},
-      tabId: await this.getSessionTabId(),
-      type: RuntimeMessageType.JiraAuthStatusRequested,
-    }) as JiraAuthStatusResponse;
-    this.jiraSessionSignal.set(status.session);
-
-    if (status.session.status === 'connected') {
-      await this.refreshJiraProjects();
-    }
-  }
-
-  private resolveConfiguredJiraClientId(): string {
-    return this.jiraClientId().trim() || jiraDefaultClientId.trim();
-  }
-
-  private async refreshJiraProjects(): Promise<void> {
-    const response = await chrome.runtime.sendMessage({
-      payload: {},
-      tabId: await this.getSessionTabId(),
-      type: RuntimeMessageType.JiraProjectsRequested,
-    }) as JiraProjectsResponse;
-
-    if (!response.ok) {
-      this.analysisErrorSignal.set(response.error ?? 'Unable to load Jira projects.');
-
-      return;
-    }
-
-    this.jiraProjectsSignal.set(response.projects);
-
-    if (!this.jiraProjectKey() && response.projects.length) {
-      const firstProject = response.projects[0];
-      this.jiraProjectKeySignal.set(firstProject!.key);
-      await this.refreshJiraIssueTypes(firstProject!.key);
-    }
-  }
-
-  private async refreshJiraIssueTypes(projectKey: string): Promise<void> {
-    if (!projectKey) {
-      return;
-    }
-
-    const response = await chrome.runtime.sendMessage({
-      payload: {projectKey},
-      tabId: await this.getSessionTabId(),
-      type: RuntimeMessageType.JiraIssueTypesRequested,
-    }) as JiraIssueTypesResponse;
-
-    if (!response.ok) {
-      this.analysisErrorSignal.set(response.error ?? 'Unable to load Jira issue types.');
-
-      return;
-    }
-
-    this.jiraIssueTypesSignal.set(response.issueTypes);
-
-    if (!this.jiraIssueTypeId() && response.issueTypes.length) {
-      const firstIssueType = response.issueTypes[0];
-      this.jiraIssueTypeIdSignal.set(firstIssueType!.id);
-    }
   }
 
   private async captureEvidenceImageData(
@@ -1040,22 +999,22 @@ export class SidePanelStateService {
     this.lastEvidenceCaptureAt = Date.now();
   }
 
-  private buildJiraIssueSummary(): string {
+  private buildJiraIssueSummary(options: JiraIssueComposerOptions): string {
     const selectedViolation = this.selectedViolation();
     const visibleViolationCount = this.visibleViolations().length;
 
-    if (selectedViolation) {
+    if (options.includeFocusedViolation && selectedViolation) {
       const violation = this.violations().find(item => item.id === selectedViolation.violationId);
 
       if (violation) {
-        return `[A11y] ${getReadableSummary(violation)} (${violation.severity})`;
+        return `[Kode Glass] ${getReadableSummary(violation)} (${violation.severity})`;
       }
     }
 
-    return `[A11y] ${visibleViolationCount} filtered findings on ${this.pageTitle() || 'page'}`;
+    return `[Kode Glass] ${visibleViolationCount} filtered findings on ${this.pageTitle() || 'page'}`;
   }
 
-  private buildJiraIssueDescription(): string {
+  private buildJiraIssueDescription(options: JiraIssueComposerOptions): string {
     const report = this.pageReport();
     const filters = this.violationFilterSettings();
     const selectedComponent = this.selectedComponentScope()?.label ?? 'All components';
@@ -1066,28 +1025,59 @@ export class SidePanelStateService {
       return 'No analysis report is currently available.';
     }
 
+    const maxFindings = Math.max(1, Math.min(100, Math.trunc(options.maxFindings || 1)));
     const findings = visibleViolations
-      .slice(0, 20)
-      .map((violation, index) => {
-        return `${index + 1}. ${getReadableSummary(violation)}
+      .slice(0, maxFindings)
+      .map((violation, index) => `${index + 1}. ${getReadableSummary(violation)}
 - Severity: ${violation.severity}
 - Rule: ${violation.ruleId}
-- Selector: ${violation.selector}`;
-      })
+ - Selector: ${violation.selector}`)
       .join('\n\n');
 
-    return `Page: ${report.pageTitle}
+    const selectedSeverityLabels = Object.entries(filters.severity)
+      .filter(([, enabled]) => enabled)
+      .map(([severity]) => severity)
+      .join(', ') || 'none';
+    const structureSnapshot = options.includeStructureSnapshot
+      ? [
+        '',
+        `Structure snapshot: ${report.headings.length} headings, ${report.landmarks.length} landmarks`,
+      ].join('\n')
+      : '';
+    const rollbackVideoNote = options.includeRollbackVideoGuidance
+      ? [
+        '',
+        `Rollback video guidance: include a ${options.rollbackWindowMinutes} minute rollback clip from the extension if needed.`,
+      ].join('\n')
+      : '';
+    const pdfNote = options.includePdfReportGuidance
+      ? [
+        '',
+        'PDF report guidance: generate and attach the PDF report from Capture & export before sharing the Jira task.',
+      ].join('\n')
+      : '';
+    const reportMarkdownSection = options.includeReportMarkdown
+      ? [
+        '',
+        'Report markdown snapshot:',
+        truncateForJira(this.createReportMarkdown(), 10_000),
+      ].join('\n')
+      : '';
+
+    return `${options.includePageMetadata ? `Page: ${report.pageTitle}
 URL: ${report.pageUrl}
 Generated: ${new Date(report.generatedAt).toISOString()}
+` : ''}
 
-Applied filters:
+${options.includeAppliedFilters ? `Applied filters:
 - Engine: ${filters.engine}
-- Severity: ${Object.entries(filters.severity).filter(([, enabled]) => enabled).map(([severity]) => severity).join(', ') || 'none'}
+- Severity: ${selectedSeverityLabels}
 - Component: ${selectedComponent}
-- Focused violation: ${selectedViolation?.violationId ?? 'none'}
+- Focused violation: ${options.includeFocusedViolation ? selectedViolation?.violationId ?? 'none' : 'excluded'}
+` : ''}
 
-Findings (${visibleViolations.length} of ${report.violations.length}):
-${findings || 'No findings in current filter scope.'}`;
+${options.includeFilteredFindings ? `Findings (${visibleViolations.length} of ${report.violations.length}, max ${maxFindings}):
+${findings || 'No findings in current filter scope.'}` : 'Findings list excluded by reporter settings.'}${structureSnapshot}${rollbackVideoNote}${pdfNote}${reportMarkdownSection}`;
   }
 
   private startAnalysisLoading(): void {
@@ -1187,54 +1177,6 @@ ${findings || 'No findings in current filter scope.'}`;
     }
   }
 
-  private loadVoiceOptions(): void {
-    const speechSynthesisApi = window.speechSynthesis;
-
-    if (!speechSynthesisApi) {
-      return;
-    }
-
-    const updateVoices = (): void => {
-      const voices = speechSynthesisApi.getVoices()
-        .map(voice => ({
-          label: `${voice.name} (${voice.lang})`,
-          lang: voice.lang,
-          localService: voice.localService,
-          name: voice.name,
-          voiceURI: voice.voiceURI,
-        }))
-        .sort((first, second) => Number(second.localService) - Number(first.localService) || first.label.localeCompare(second.label));
-
-      this.voiceOptionsSignal.set(voices);
-
-      if (!this.readerMode().voiceURI) {
-        const picked = pickDefaultReaderVoice(voices);
-
-        if (picked) {
-          const readerMode = this.readerMode();
-
-          this.commitReaderMode({
-            ...readerMode,
-            voiceName: picked.voiceName,
-            voiceURI: picked.voiceURI,
-          });
-        }
-      }
-    };
-
-    updateVoices();
-    this.teardownVoiceOptionsListener();
-    speechSynthesisApi.addEventListener('voiceschanged', updateVoices);
-    this.detachVoicesChangedListener = (): void => {
-      speechSynthesisApi.removeEventListener('voiceschanged', updateVoices);
-    };
-  }
-
-  private teardownVoiceOptionsListener(): void {
-    this.detachVoicesChangedListener?.();
-    this.detachVoicesChangedListener = undefined;
-  }
-
   private async startLocalVideoBuffer(_tabId: number): Promise<void> {
     if (!chrome.tabCapture?.capture) {
       throw new Error('Tab capture is not available in this browser context.');
@@ -1295,6 +1237,22 @@ ${findings || 'No findings in current filter scope.'}`;
     }
 
     this.videoRollbackChunks.splice(0, firstIndexInWindow);
+  }
+
+  private createRollbackVideoBlob(minutes: number): Blob | null {
+    if (!this.videoBufferEnabled()) {
+      return null;
+    }
+
+    const cutoff = Date.now() - minutes * 60_000;
+    const chunks = this.videoRollbackChunks.filter(chunk => chunk.recordedAt >= cutoff).map(chunk => chunk.blob);
+
+    if (!chunks.length) {
+      return null;
+    }
+
+    const mimeType = this.videoRollbackRecorder?.mimeType || 'video/webm';
+    return new Blob(chunks, {type: mimeType});
   }
 
   private handleRuntimeDeliveryFailure(message: RuntimeMessage, error: unknown): void {
@@ -1534,10 +1492,6 @@ function getSessionTabIdFromLocation(): number | undefined {
   return Number.isInteger(tabId) && tabId >= 0 ? tabId : undefined;
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function cropScreenshotToBounds(dataUrl: string, snapshot: CaptureBoundsSnapshot): Promise<string> {
   const image = await loadImage(dataUrl);
   const scaleX = image.naturalWidth / snapshot.viewportWidth;
@@ -1579,245 +1533,16 @@ function getPreferredVideoMimeType(): string | undefined {
   return preferredMimeTypes.find(mimeType => MediaRecorder.isTypeSupported(mimeType));
 }
 
-function formatAuditStandard(standard: AuditStandard): string {
-  return ({
-    'best-practice': 'Best practices',
-    wcag2a: 'WCAG A',
-    wcag2aa: 'WCAG AA',
-    wcag2aaa: 'WCAG AAA',
-  } as Record<AuditStandard, string>)[standard];
-}
-
-function formatViolationEngines(engines: readonly KodeGlassViolation['engine'][]): string {
-  return engines.map(formatViolationEngine).join(' + ');
-}
-
-function formatViolationEngine(engine: KodeGlassViolation['engine']): string {
-  return ({
-    'axe-core': 'axe',
-    'ibm-equal-access': 'IBM',
-    manual: 'Manual',
-    playwright: 'Playwright',
-  } as Record<KodeGlassViolation['engine'], string>)[engine];
-}
-
-function formatCoverageStatus(status: WcagCoverageStatus): string {
-  return ({
-    failed: 'Failed',
-    'needs-manual-review': 'Needs manual review',
-    'not-tested': 'Not tested',
-    'passed-automated': 'Passed automated checks',
-  } as Record<WcagCoverageStatus, string>)[status];
-}
-
-function getReadableSummary(violation: KodeGlassViolation): string {
-  const summary = (violation.title ?? violation.summary).replace(/\s+/g, ' ').replace(/^Fix any of the following:\s*/i, '').trim();
-
-  if (violation.ruleId === 'color-contrast') {
-    return 'Text contrast is too low';
+function truncateForJira(value: string, maxCharacters: number): string {
+  if (value.length <= maxCharacters) {
+    return value;
   }
 
-  if (violation.ruleId === 'image-alt') {
-    return 'Image is missing alternate text';
-  }
-
-  if (violation.ruleId === 'link-name') {
-    return 'Link has no accessible name';
-  }
-
-  if (violation.ruleId === 'target-size') {
-    return 'Tap target is too small';
-  }
-
-  return summary;
+  return `${value.slice(0, maxCharacters).trimEnd()}\n\n... [truncated ${value.length - maxCharacters} characters]`;
 }
 
-function getReadableGuidance(guidance: string): string {
-  return guidance
-    .replace(/\s+/g, ' ')
-    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
-    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
-    .trim();
-}
-
-function createViolationFix(violation: KodeGlassViolation): ViolationFix | undefined {
-  if (!violation.guidance) {
-    return undefined;
-  }
-
-  const guidance = getReadableGuidance(violation.guidance);
-
-  if (!guidance) {
-    return undefined;
-  }
-
-  return {
-    segments: createInlineFixSegments(guidance),
-    text: guidance,
-  };
-}
-
-function selectEvidenceViolations(violations: readonly KodeGlassViolation[], maxImages: number): readonly KodeGlassViolation[] {
-  const rankedViolations = [...violations].sort((first, second) => {
-    const severityDelta = getSeverityRank(second.severity) - getSeverityRank(first.severity);
-
-    return severityDelta || first.ruleId.localeCompare(second.ruleId) || first.selector.localeCompare(second.selector);
-  });
-  const selected: KodeGlassViolation[] = [];
-  const selectedIds = new Set<string>();
-  const componentKeys = new Set<string>();
-  const ruleKeys = new Set<string>();
-
-  for (const violation of rankedViolations) {
-    const componentKey = getEvidenceComponentKey(violation);
-
-    if (!componentKey || componentKeys.has(componentKey)) {
-      continue;
-    }
-
-    selected.push(violation);
-    selectedIds.add(violation.id);
-    componentKeys.add(componentKey);
-
-    if (selected.length >= maxImages) {
-      return selected;
-    }
-  }
-
-  for (const violation of rankedViolations) {
-    const ruleKey = `${formatViolationEngines(violation.sourceEngines ?? [violation.engine])}:${violation.ruleId}`;
-
-    if (selectedIds.has(violation.id) || ruleKeys.has(ruleKey)) {
-      continue;
-    }
-
-    selected.push(violation);
-    selectedIds.add(violation.id);
-    ruleKeys.add(ruleKey);
-
-    if (selected.length >= maxImages) {
-      return selected;
-    }
-  }
-
-  for (const violation of rankedViolations) {
-    if (selectedIds.has(violation.id)) {
-      continue;
-    }
-
-    selected.push(violation);
-
-    if (selected.length >= maxImages) {
-      return selected;
-    }
-  }
-
-  return selected;
-}
-
-function getEvidenceComponentKey(violation: KodeGlassViolation): string | undefined {
-  const fallbackSelector = violation.selector.split('>').slice(0, 4).join('>').trim();
-  const key = violation.componentScope?.tagName
-    ?? violation.componentScope?.selector
-    ?? fallbackSelector;
-
-  return key || undefined;
-}
-
-interface InlineChipRange {
-  readonly end: number;
-  readonly start: number;
-  readonly text: string;
-}
-
-function createInlineFixSegments(guidance: string): readonly ViolationFixSegment[] {
-  const ranges = [
-    ...findCaptureRanges(guidance, /contrast of ([\d.]+)/gi),
-    ...findWholeMatchRanges(guidance, /foreground color: [^,]+/gi),
-    ...findWholeMatchRanges(guidance, /background color: [^,]+/gi),
-    ...findWholeMatchRanges(guidance, /font size: [^,]+/gi),
-    ...findWholeMatchRanges(guidance, /font weight: [^)]+/gi),
-    ...findCaptureRanges(guidance, /Expected contrast ratio of ([\d.:]+)/gi),
-    ...findWholeMatchRanges(guidance, /\d+(?:\.\d+)?\s*px(?:\s+by\s+\d+(?:\.\d+)?\s*px)?/gi),
-    ...findWholeMatchRanges(guidance, /\b(?:aria-[\w-]+|alt|title|href|tabindex)\b/g),
-    ...findWholeMatchRanges(guidance, /role="[^"]+"/g),
-  ]
-    .sort((first, second) => first.start - second.start)
-    .filter((range, index, sortedRanges) => {
-      const previousRange = sortedRanges[index - 1];
-
-      return !previousRange || range.start >= previousRange.end;
-    });
-
-  if (!ranges.length) {
-    return [{kind: 'text', text: guidance}];
-  }
-
-  const segments: ViolationFixSegment[] = [];
-  let cursor = 0;
-
-  for (const range of ranges) {
-    if (range.start > cursor) {
-      segments.push({kind: 'text', text: guidance.slice(cursor, range.start)});
-    }
-
-    segments.push({kind: 'chip', text: range.text});
-    cursor = range.end;
-  }
-
-  if (cursor < guidance.length) {
-    segments.push({kind: 'text', text: guidance.slice(cursor)});
-  }
-
-  return segments;
-}
-
-function findCaptureRanges(text: string, pattern: RegExp): readonly InlineChipRange[] {
-  return [...text.matchAll(pattern)].flatMap(match => {
-    const capture = match[1];
-
-    if (!capture || match.index === undefined) {
-      return [];
-    }
-
-    const matchStart = match.index;
-    const captureStartInMatch = match[0].indexOf(capture);
-
-    if (captureStartInMatch < 0) {
-      return [];
-    }
-
-    const trimmedCapture = capture.trim();
-    const leadingSpace = capture.length - capture.trimStart().length;
-    const start = matchStart + captureStartInMatch + leadingSpace;
-
-    return [{start, end: start + trimmedCapture.length, text: trimmedCapture}];
-  });
-}
-
-function findWholeMatchRanges(text: string, pattern: RegExp): readonly InlineChipRange[] {
-  return [...text.matchAll(pattern)].flatMap(match => {
-    if (!match[0] || match.index === undefined) {
-      return [];
-    }
-
-    return [{start: match.index, end: match.index + match[0].length, text: match[0]}];
-  });
-}
-
-function getHighestSeverity(current: ViolationSeverity | undefined, next: ViolationSeverity): ViolationSeverity {
-  if (!current) {
-    return next;
-  }
-
-  return getSeverityRank(next) > getSeverityRank(current) ? next : current;
-}
-
-function getSeverityRank(severity: ViolationSeverity): number {
-  return ({critical: 3, warning: 2, info: 1} as Record<ViolationSeverity, number>)[severity];
-}
-
-async function wait(durationMs: number): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, durationMs));
+function normalizeJiraIssueKey(value: string | undefined): string | undefined {
+  const trimmedValue = value?.trim().toUpperCase();
+  return trimmedValue ? trimmedValue : undefined;
 }
 

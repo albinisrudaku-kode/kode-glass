@@ -72,8 +72,25 @@ textarea {
 }
 
 .settings-toggle[tuiButton],
+.jira-toggle[tuiButton],
 .theme-toggle[tuiButton] {
   min-inline-size: 2.25rem;
+}
+
+.settings-toggle.is-active[tuiButton],
+.jira-toggle.is-active[tuiButton] {
+  border-color: color-mix(in srgb, var(--tui-background-accent-1-pressed) 50%, var(--tui-border-normal));
+  background: color-mix(in srgb, var(--tui-background-accent-1) 14%, var(--tui-background-base-alt));
+  color: var(--tui-background-accent-1-pressed);
+}
+
+.jira-toggle[tuiButton] {
+  padding-inline: 0.45rem;
+}
+
+.jira-logo {
+  display: block;
+  block-size: 1rem;
 }
 
 .title-block,
@@ -274,9 +291,25 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.status-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.375rem;
+}
+
+.status-message-actions [tuiButton] {
+  min-inline-size: 0;
+}
+
 .status-message--error {
   border-color: color-mix(in srgb, var(--tui-status-negative) 44%, var(--tui-border-normal));
   background: var(--tui-status-negative-pale);
+}
+
+.status-message--info {
+  border-color: color-mix(in srgb, var(--tui-status-info) 42%, var(--tui-border-normal));
+  background: var(--tui-status-info-pale);
 }
 
 .engine-status-list {
@@ -446,6 +479,110 @@ textarea {
 
 .reader-controls {
   gap: var(--kg-gap-md);
+}
+
+.settings-disclosure {
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 70%, transparent);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--tui-background-base-alt) 66%, transparent);
+}
+
+.settings-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kg-gap-sm);
+  min-block-size: 2.25rem;
+  color: var(--tui-background-accent-1-pressed);
+  cursor: pointer;
+  font: var(--tui-font-text-xs-bold);
+  list-style: none;
+  padding: 0.5rem 0.75rem;
+}
+
+.settings-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-disclosure > summary::after {
+  content: '+';
+  color: var(--tui-text-tertiary);
+  font: var(--tui-font-text-s-bold);
+}
+
+.settings-disclosure[open] > summary::after {
+  content: '−';
+}
+
+.disclosure-content {
+  display: grid;
+  gap: var(--kg-gap-sm);
+  padding: 0 0.75rem 0.75rem;
+}
+
+.advanced-controls-grid {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.settings-disclosure--advanced .disclosure-content {
+  gap: 0.625rem;
+}
+
+.settings-disclosure--advanced .eyebrow {
+  letter-spacing: 0.035em;
+}
+
+.engine-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  inline-size: 100%;
+  padding: 0.625rem 0 0.625rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--tui-border-normal) 60%, transparent);
+}
+
+.engine-setting-copy {
+  display: grid;
+  gap: 0.125rem;
+  min-inline-size: 0;
+}
+
+.engine-setting-copy strong {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s-bold);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.engine-setting-copy span {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-xs);
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+
+.utility-actions {
+  gap: var(--kg-gap-sm);
+}
+
+.utility-actions > .eyebrow {
+  margin: 0;
+}
+
+.utility-section {
+  gap: var(--kg-gap-md);
+}
+
+.section-heading {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.section-heading .eyebrow {
+  margin: 0;
 }
 
 .layer-actions {
@@ -655,6 +792,134 @@ textarea {
   color: var(--tui-status-positive);
 }
 
+.jira-option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-inline-size: 0;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--tui-border-normal) 66%, transparent);
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s);
+}
+
+.jira-checkbox-row {
+  justify-content: flex-start;
+}
+
+.jira-checkbox-row input[type='checkbox'] {
+  accent-color: var(--tui-background-accent-1-pressed);
+}
+
+.jira-option-row:last-of-type {
+  border-bottom: 0;
+}
+
+.jira-max-findings {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+}
+
+.jira-max-findings input[type='number'] {
+  max-inline-size: 7rem;
+}
+
+.jira-preview-group {
+  gap: 0.5rem;
+}
+
+.jira-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.jira-preview-field {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.jira-preview-field > span {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-xs-bold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.jira-preview-field textarea {
+  min-block-size: 5rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base-alt);
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+  line-height: 1.35;
+  padding: 0.625rem;
+  resize: vertical;
+}
+
+.jira-preview-card {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.625rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base-alt);
+}
+
+.jira-preview-title {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-xs-bold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.jira-preview-card p {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s);
+  line-height: 1.35;
+  margin: 0;
+}
+
+.jira-preview-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+  line-height: 1.35;
+}
+
+.jira-preview-assets {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.jira-preview-asset {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.625rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base-alt);
+}
+
+.jira-preview-asset p {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+  margin: 0;
+}
+
+.jira-preview-asset img,
+.jira-preview-asset video {
+  inline-size: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 74%, transparent);
+  background: var(--tui-background-base);
+}
+
 .severity-row {
   margin-block-end: 0;
 }
@@ -694,6 +959,11 @@ textarea {
 .engine-filter-row[tuiButtonGroup] button.active {
   background: var(--tui-background-accent-1-pressed);
   color: var(--tui-background-base);
+}
+
+.engine-filter-row.compact-group[tuiButtonGroup] button {
+  min-block-size: 2rem;
+  font: var(--tui-font-text-xs);
 }
 
 .severity.critical {
@@ -1210,6 +1480,49 @@ textarea {
 .summary-list span {
   color: var(--tui-text-primary);
   font: var(--tui-font-text-s);
+}
+
+.narrator-shortcuts-grid {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.narrator-shortcut-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 70%, transparent);
+  border-radius: 0.625rem;
+  background: color-mix(in srgb, var(--tui-background-base-alt) 74%, transparent);
+}
+
+.narrator-shortcut-action {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s);
+  overflow-wrap: anywhere;
+}
+
+.narrator-shortcut-keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.narrator-shortcut-keys kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 1.75rem;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 78%, transparent);
+  border-radius: 0.35rem;
+  background: var(--tui-background-base);
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-xs-bold);
+  line-height: 1.2;
 }
 
 .report-header {

@@ -3,6 +3,7 @@ import type {AuditSettings} from '../shared/accessibility-report';
 import {PageOverlay} from './page-overlay';
 import type {analyzeCurrentPage} from '../shared/engines/accessibility-engine';
 import {collectDetectedComponentOptions, enrichViolationsWithComponentScope} from './component-scope';
+import {getErrorMessage, silenced} from '../shared/error-boundary';
 
 type AnalyzeCurrentPage = typeof analyzeCurrentPage;
 
@@ -36,24 +37,26 @@ function initializeContentScript(): void {
     void dispatchRuntimeMessage({
       payload: activeNode,
       type: RuntimeMessageType.ActiveNodeChanged,
-    }).catch(() => undefined);
+    }).catch(() => silenced());
   });
 
   pageOverlay.onComponentScopeChanged(payload => {
     void dispatchRuntimeMessage({
       payload,
       type: RuntimeMessageType.ComponentScopeChanged,
-    }).catch(() => undefined);
+    }).catch(() => silenced());
   });
 
   pageOverlay.onViolationSelected(payload => {
     void dispatchRuntimeMessage({
       payload,
       type: RuntimeMessageType.ViolationSelected,
-    }).catch(() => undefined);
+    }).catch(() => silenced());
   });
 
   installNavigationWatcher(pageOverlay, navigationState);
+
+  window.addEventListener('beforeunload', () => pageOverlay.dispose());
 
   void sendContentReadyMessage();
 
@@ -82,6 +85,10 @@ function initializeContentScript(): void {
 
     if (message.type === RuntimeMessageType.ReaderModeChanged) {
       pageOverlay.setReaderMode(message.payload);
+    }
+
+    if (message.type === RuntimeMessageType.ReaderCommandRequested) {
+      pageOverlay.applyNarratorCommand(message.payload);
     }
 
     if (message.type === RuntimeMessageType.ViolationFiltersChanged) {
@@ -125,7 +132,7 @@ function installNavigationWatcher(pageOverlay: PageOverlay, navigationState: Con
     void dispatchRuntimeMessage({
       payload: {},
       type: RuntimeMessageType.TabReloaded,
-    }).catch(() => undefined);
+    }).catch(() => silenced());
 
     clearTimeout(navigationState.syncTimer);
     navigationState.syncTimer = setTimeout(() => {
@@ -226,6 +233,4 @@ async function dispatchRuntimeMessage(message: RuntimeMessage): Promise<void> {
   await chrome.runtime.sendMessage(message);
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+

@@ -11,6 +11,7 @@ import type {
   JiraProjectOption,
   JiraSiteOption,
   LayerVisibility,
+  NarratorCommand,
   ReaderModeSettings,
   ViolationFilterSettings,
 } from './accessibility-report';
@@ -39,7 +40,10 @@ export const enum RuntimeMessageType {
   PageContextRequested = 'page-context.requested',
   PanelOpened = 'side-panel.opened',
   ReaderModeChanged = 'reader-mode.changed',
+  ReaderCommandRequested = 'reader.command-requested',
+  ReaderSpeechControlRequested = 'reader.speech-control.requested',
   ReaderSpeakRequested = 'reader.speak-requested',
+  ReaderVoicesRequested = 'reader.voices-requested',
   ReportGenerated = 'report.generated',
   ResetRequested = 'analysis.reset-requested',
   ResetCompleted = 'analysis.reset-completed',
@@ -184,6 +188,9 @@ export interface JiraIssueCreateRequestPayload {
   readonly description: string;
   readonly evidenceImageDataUrls: readonly string[];
   readonly issueTypeId: string;
+  readonly linkIssueKey?: string;
+  readonly linkTypeName?: string;
+  readonly parentIssueKey?: string;
   readonly projectKey: string;
   readonly summary: string;
 }
@@ -313,6 +320,20 @@ export type ReaderModeChangedMessage = MessageEnvelope<
   ReaderModeSettings
 >;
 
+export type ReaderCommandRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.ReaderCommandRequested,
+  NarratorCommand
+>;
+
+export interface ReaderSpeechControlPayload {
+  readonly action: 'pause' | 'resume' | 'stop';
+}
+
+export type ReaderSpeechControlRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.ReaderSpeechControlRequested,
+  ReaderSpeechControlPayload
+>;
+
 export interface ReaderSpeakPayload {
   readonly readerMode: ReaderModeSettings;
   readonly text: string;
@@ -322,6 +343,27 @@ export type ReaderSpeakRequestedMessage = MessageEnvelope<
   RuntimeMessageType.ReaderSpeakRequested,
   ReaderSpeakPayload
 >;
+
+export interface ReaderVoiceOption {
+  readonly gender?: string;
+  readonly label: string;
+  readonly lang: string;
+  readonly localService: boolean;
+  readonly name: string;
+  readonly remote?: boolean;
+  readonly voiceURI: string;
+}
+
+export type ReaderVoicesRequestedMessage = MessageEnvelope<
+  RuntimeMessageType.ReaderVoicesRequested,
+  Record<string, never>
+>;
+
+export interface ReaderVoicesResponse {
+  readonly error?: string;
+  readonly ok: boolean;
+  readonly voices: readonly ReaderVoiceOption[];
+}
 
 export type RuntimeMessage =
   | ActiveNodeChangedMessage
@@ -346,8 +388,11 @@ export type RuntimeMessage =
   | LayerVisibilityChangedMessage
   | PageContextRequestedMessage
   | PanelOpenedMessage
+  | ReaderCommandRequestedMessage
   | ReaderModeChangedMessage
+  | ReaderSpeechControlRequestedMessage
   | ReaderSpeakRequestedMessage
+  | ReaderVoicesRequestedMessage
   | ReportGeneratedMessage
   | ResetCompletedMessage
   | ResetRequestedMessage

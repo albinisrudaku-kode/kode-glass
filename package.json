@@ -1,12 +1,15 @@
 {
   "name": "kode-glass",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Accessibility audit Chrome extension with visual overlays for QA teams.",
   "private": true,
   "scripts": {
     "build": "webpack --mode production",
     "dev": "webpack --mode development --watch",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit"
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "analyze": "webpack --mode production --analyze"
   },
   "dependencies": {
     "@angular/animations": "^21.2.11",
@@ -33,15 +36,23 @@
     "@babel/core": "^7.29.0",
     "@ngtools/webpack": "^21.2.9",
     "@types/chrome": "^0.1.33",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "angular-eslint": "^21.3.1",
     "babel-loader": "^10.1.1",
     "copy-webpack-plugin": "^13.0.1",
     "css-loader": "^7.1.2",
+    "eslint": "^10.3.0",
     "html-webpack-plugin": "^5.6.3",
     "less": "^4.2.2",
     "less-loader": "^12.2.0",
     "mini-css-extract-plugin": "^2.9.2",
+    "prettier": "^3.8.3",
+    "terser-webpack-plugin": "^5.6.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.2",
     "webpack": "^5.97.1",
+    "webpack-bundle-analyzer": "^5.3.0",
     "webpack-cli": "^5.1.4"
   },
   "engines": {

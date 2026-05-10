@@ -3,13 +3,30 @@ import {FormsModule} from '@angular/forms';
 import {TuiAppearance, TuiButton, TuiFilterByInputPipe, TuiIcon, TuiLoader, TuiRoot, TuiSlider} from '@taiga-ui/core';
 import {TuiLink} from '@taiga-ui/core/components/link';
 import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiChip, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
-import type {AuditStandard, ComponentScopeOption, EvidenceCaptureMode, LayerName, ViolationEngineFilter, ViolationSeverity, WcagCoverageItem} from '../../shared/accessibility-report';
-import {SidePanelStateService, type PreviewMode, type ViolationGroup} from './side-panel-state.service';
+import type {
+  AuditStandard,
+  ComponentScopeOption,
+  EvidenceCaptureMode,
+  LayerName,
+  NarratorCommandProfile,
+  NarratorInterruptPolicy,
+  NarratorKeyboardMode,
+  NarratorVerbosity,
+  ViolationEngineFilter,
+  ViolationSeverity,
+} from '../../shared/accessibility-report';
+import {
+  SidePanelStateService,
+  type JiraIssueComposerOptions,
+  type JiraIssueRelationOptions,
+  type PreviewMode,
+  type ViolationGroup,
+} from './side-panel-state.service';
 
-type PanelTab = 'violations' | 'coverage' | 'structure' | 'report';
-type PanelView = 'main' | 'settings';
+type PanelTab = 'violations' | 'structure' | 'report';
+type PanelView = 'jira' | 'main' | 'settings';
 type Theme = 'light' | 'dark';
-type LayerFilterItem = 'Coverage' | 'Errors' | 'Landmarks' | 'Focus';
+type LayerFilterItem = 'Errors' | 'Landmarks' | 'Focus';
 type RollbackMinutes = 1 | 3 | 5;
 
 interface PanelTabItem {
@@ -35,6 +52,16 @@ interface ViolationEngineFilterItem {
 interface ComponentScopeSelectItem {
   readonly label: string;
   readonly scope: ComponentScopeOption;
+}
+
+interface NarratorModeOption<T extends string> {
+  readonly id: T;
+  readonly label: string;
+}
+
+interface NarratorShortcutItem {
+  readonly action: string;
+  readonly keys: readonly string[];
 }
 
 @Component({
@@ -65,18 +92,67 @@ interface ComponentScopeSelectItem {
 })
 export class AppComponent {
   private readonly destroyRef = inject(DestroyRef);
+  private readonly isMac = /mac/i.test(navigator.platform);
+  private jiraPreviewVideoObjectUrl: string | null = null;
   private lastFocusedViolationId: string | null = null;
+  private readonly dismissedAnalysisError = signal<string | null>(null);
   protected readonly state = inject(SidePanelStateService);
   protected readonly activeTab = signal<PanelTab>('violations');
   protected readonly expandedViolationGroups = signal<ReadonlySet<string>>(new Set());
   protected readonly evidenceCaptureMode = signal<EvidenceCaptureMode>('full-screen');
   protected readonly rollbackMinutes = signal<RollbackMinutes>(1);
+  protected readonly jiraIncludeAppliedFilters = signal(true);
+  protected readonly jiraIncludeEvidenceImage = signal(true);
+  protected readonly jiraIncludeFilteredFindings = signal(true);
+  protected readonly jiraIncludeFocusedViolation = signal(true);
+  protected readonly jiraIncludePageMetadata = signal(true);
+  protected readonly jiraIncludePdfReportGuidance = signal(true);
+  protected readonly jiraIncludeReportMarkdown = signal(false);
+  protected readonly jiraIncludeRollbackVideoGuidance = signal(false);
+  protected readonly jiraIncludeStructureSnapshot = signal(true);
+  protected readonly jiraLinkIssueKey = signal('');
+  protected readonly jiraLinkTypeName = signal('Relates');
+  protected readonly jiraMaxFindings = signal(20);
+  protected readonly jiraParentIssueKey = signal('');
+  protected readonly jiraPreviewImageUrl = signal<string | null>(null);
+  protected readonly jiraPreviewVideoUrl = signal<string | null>(null);
+  protected readonly jiraPreviewPending = signal(false);
   protected readonly theme = signal<Theme>(getStoredTheme());
   protected readonly panelView = signal<PanelView>('main');
   protected readonly themeIcon = computed(() => this.theme() === 'light' ? '@tui.sun' : '@tui.moon');
   protected readonly themeLabel = computed(() => this.theme() === 'light' ? 'Light' : 'Dark');
   protected readonly themeToggleLabel = computed(() => `Switch to ${this.theme() === 'light' ? 'dark' : 'light'} theme`);
   protected readonly settingsToggleLabel = computed(() => this.panelView() === 'settings' ? 'Close settings' : 'Open settings');
+  protected readonly jiraToggleLabel = computed(() => this.panelView() === 'jira' ? 'Close Jira settings' : 'Open Jira settings');
+  protected readonly jiraComposerOptions = computed<JiraIssueComposerOptions>(() => ({
+    includeAppliedFilters: this.jiraIncludeAppliedFilters(),
+    includeEvidenceImage: this.jiraIncludeEvidenceImage(),
+    includeFilteredFindings: this.jiraIncludeFilteredFindings(),
+    includeFocusedViolation: this.jiraIncludeFocusedViolation(),
+    includePageMetadata: this.jiraIncludePageMetadata(),
+    includePdfReportGuidance: this.jiraIncludePdfReportGuidance(),
+    includeReportMarkdown: this.jiraIncludeReportMarkdown(),
+    includeRollbackVideoGuidance: this.jiraIncludeRollbackVideoGuidance(),
+    includeStructureSnapshot: this.jiraIncludeStructureSnapshot(),
+    maxFindings: this.jiraMaxFindings(),
+    rollbackWindowMinutes: this.rollbackMinutes(),
+  }));
+  protected readonly jiraRelationOptions = computed<JiraIssueRelationOptions>(() => ({
+    linkIssueKey: this.jiraLinkIssueKey().trim() || undefined,
+    linkTypeName: this.jiraLinkTypeName().trim() || undefined,
+    parentIssueKey: this.jiraParentIssueKey().trim() || undefined,
+  }));
+  protected readonly jiraLinkTypes: readonly string[] = ['Relates', 'Blocks', 'Is blocked by', 'Duplicates', 'Is duplicated by'];
+  protected readonly jiraIssueDraft = computed(() => this.state.buildJiraIssueDraft(this.jiraComposerOptions()));
+  protected readonly visibleAnalysisError = computed(() => {
+    const analysisError = this.state.analysisError();
+
+    if (!analysisError) {
+      return null;
+    }
+
+    return this.dismissedAnalysisError() === analysisError ? null : analysisError;
+  });
   protected readonly previewMode = computed<PreviewMode>(() => {
     const readerMode = this.state.readerMode();
 
@@ -86,17 +162,13 @@ export class AppComponent {
 
     return readerMode.inspectWithMouse ? 'inspect' : 'off';
   });
-  protected readonly layerFilterItems: readonly LayerFilterItem[] = ['Errors', 'Coverage', 'Landmarks', 'Focus'];
+  protected readonly layerFilterItems: readonly LayerFilterItem[] = ['Errors', 'Landmarks', 'Focus'];
   protected readonly selectedLayerFilters = computed(() => {
     const visibility = this.state.layerVisibility();
     const selectedFilters: LayerFilterItem[] = [];
 
     if (visibility.errors) {
       selectedFilters.push('Errors');
-    }
-
-    if (visibility.coverage) {
-      selectedFilters.push('Coverage');
     }
 
     if (visibility.landmarks) {
@@ -156,7 +228,6 @@ export class AppComponent {
   });
   protected readonly tabs: readonly PanelTabItem[] = [
     {id: 'violations', label: 'Violations'},
-    {id: 'coverage', label: 'Coverage'},
     {id: 'structure', label: 'Structure'},
     {id: 'report', label: 'Report'},
   ];
@@ -182,6 +253,80 @@ export class AppComponent {
     {id: 'free-select', label: 'Free select'},
   ];
   protected readonly rollbackMinuteOptions: readonly RollbackMinutes[] = [1, 3, 5];
+  protected readonly narratorKeyboardModes: readonly NarratorModeOption<NarratorKeyboardMode>[] = [
+    {id: 'strict-capture', label: 'Strict'},
+    {id: 'safe-capture', label: 'Safe'},
+  ];
+  protected readonly narratorCommandProfiles: readonly NarratorModeOption<NarratorCommandProfile>[] = [
+    {id: 'hybrid', label: 'Hybrid'},
+    {id: 'voiceover', label: 'VoiceOver'},
+    {id: 'windows-narrator', label: 'Narrator'},
+    {id: 'nvda-jaws', label: 'NVDA/JAWS'},
+  ];
+  protected readonly narratorVerbosityProfiles: readonly NarratorModeOption<NarratorVerbosity>[] = [
+    {id: 'low', label: 'Low'},
+    {id: 'medium', label: 'Medium'},
+    {id: 'high', label: 'High'},
+  ];
+  protected readonly narratorInterruptPolicies: readonly NarratorModeOption<NarratorInterruptPolicy>[] = [
+    {id: 'coalesce', label: 'Coalesce'},
+    {id: 'interrupt', label: 'Interrupt'},
+    {id: 'queue', label: 'Queue'},
+  ];
+  protected readonly narratorShortcutCheatSheet = computed<readonly NarratorShortcutItem[]>(() => {
+    const profile = this.state.readerMode().commandProfile ?? 'hybrid';
+    const alt = this.isMac ? 'Option' : 'Alt';
+    const mod = this.isMac ? 'Cmd' : 'Ctrl';
+    const sharedShortcuts: NarratorShortcutItem[] = [
+      {action: 'Next item', keys: ['Down']},
+      {action: 'Previous item', keys: ['Up']},
+      {action: 'Read current', keys: ['Ctrl', alt, 'Space']},
+      {action: 'Activate', keys: ['Enter']},
+      {action: 'Say all', keys: [mod, 'Shift', 'Space']},
+      {action: 'Stop speech', keys: ['Esc']},
+      {action: 'Pause speech', keys: [mod, 'Space']},
+      {action: 'Resume speech', keys: [alt, 'Space']},
+    ];
+
+    if (profile === 'voiceover') {
+      return [
+        ...sharedShortcuts,
+        {action: 'VO next item', keys: ['Ctrl', alt, 'Right']},
+        {action: 'VO previous item', keys: ['Ctrl', alt, 'Left']},
+      ];
+    }
+
+    if (profile === 'windows-narrator') {
+      return [
+        ...sharedShortcuts,
+        {action: 'Next control', keys: ['Ctrl', 'Alt', 'Right']},
+        {action: 'Previous control', keys: ['Ctrl', 'Alt', 'Left']},
+      ];
+    }
+
+    if (profile === 'nvda-jaws') {
+      return [
+        ...sharedShortcuts,
+        {action: 'Headings next/prev', keys: ['H', 'Shift+H']},
+        {action: 'Links next/prev', keys: ['L', 'Shift+L']},
+        {action: 'Buttons next/prev', keys: ['B', 'Shift+B']},
+        {action: 'Fields next/prev', keys: ['F', 'Shift+F']},
+        {action: 'Landmarks next/prev', keys: ['R', 'Shift+R']},
+        {action: 'Elements next/prev', keys: ['E', 'Shift+E']},
+      ];
+    }
+
+    return [
+      ...sharedShortcuts,
+        {action: 'VO next/prev', keys: [`Ctrl+${alt}+Right`, `Ctrl+${alt}+Left`]},
+        {action: 'Narrator controls', keys: ['Ctrl+Alt+Right', 'Ctrl+Alt+Left']},
+      {action: 'Headings next/prev', keys: ['H', 'Shift+H']},
+      {action: 'Links next/prev', keys: ['L', 'Shift+L']},
+      {action: 'Buttons next/prev', keys: ['B', 'Shift+B']},
+      {action: 'Fields next/prev', keys: ['F', 'Shift+F']},
+      {action: 'Landmarks next/prev', keys: ['R', 'Shift+R']},
+    ];
+  });
   protected readonly pageOrigin = computed(() => {
     const pageUrl = this.state.pageUrl();
 
@@ -199,6 +344,10 @@ export class AppComponent {
     this.destroyRef.onDestroy(() => {
       window.removeEventListener('beforeunload', this.closePanelSession);
       window.removeEventListener('pagehide', this.closePanelSession);
+      if (this.jiraPreviewVideoObjectUrl) {
+        URL.revokeObjectURL(this.jiraPreviewVideoObjectUrl);
+        this.jiraPreviewVideoObjectUrl = null;
+      }
     });
 
     effect(() => {
@@ -209,7 +358,7 @@ export class AppComponent {
         return;
       }
 
-      if (this.state.selectedViolation() && this.activeTab() !== 'coverage') {
+      if (this.state.selectedViolation() && this.activeTab() !== 'violations') {
         this.activeTab.set('violations');
         this.scrollToViolations();
       }
@@ -247,6 +396,22 @@ export class AppComponent {
       }
 
       this.expandedViolationGroups.update(expandedGroups => new Set([...expandedGroups, matchingGroup.id]));
+    });
+
+    effect(() => {
+      if (!this.state.analysisError()) {
+        this.dismissedAnalysisError.set(null);
+      }
+    });
+
+    effect(() => {
+      void this.refreshJiraPreviewAssets();
+    });
+
+    effect(() => {
+      if (!this.state.jiraConnected() && this.panelView() === 'jira') {
+        this.panelView.set('settings');
+      }
     });
   }
 
@@ -377,14 +542,12 @@ export class AppComponent {
 
   protected setLayerFilters(filters: readonly LayerFilterItem[] | null): void {
     const selectedFilters = new Set(filters ?? []);
-    const currentVisibility = this.state.layerVisibility();
-    const findingLayer = this.resolveFindingLayerSelection(selectedFilters, currentVisibility);
     const nextVisibility = {
-      coverage: findingLayer === 'coverage',
-      errors: findingLayer === 'errors',
+      coverage: false,
+      errors: selectedFilters.has('Errors'),
       focusPath: selectedFilters.has('Focus'),
       landmarks: selectedFilters.has('Landmarks'),
-      pageOverlay: currentVisibility.pageOverlay,
+      pageOverlay: this.state.layerVisibility().pageOverlay,
     };
 
     this.state.setLayerVisibility(nextVisibility);
@@ -453,7 +616,51 @@ export class AppComponent {
   }
 
   protected createJiraTask(): void {
-    void this.state.createIssueFromCurrentContext();
+    const draft = this.jiraIssueDraft();
+
+    if (!draft.canCreate) {
+      return;
+    }
+
+    const shouldCreateTask = confirm('Are you sure you want to create this Jira task?');
+
+    if (!shouldCreateTask) {
+      return;
+    }
+
+    void this.state.createIssueFromDraft(this.jiraComposerOptions(), this.jiraRelationOptions());
+  }
+
+  protected setJiraMaxFindings(value: string | null): void {
+    const parsedValue = Number(value ?? '');
+
+    if (!Number.isFinite(parsedValue)) {
+      return;
+    }
+
+    this.jiraMaxFindings.set(Math.max(1, Math.min(100, Math.round(parsedValue))));
+  }
+
+  protected async refreshJiraPreviewAssets(): Promise<void> {
+    if (this.panelView() !== 'jira') {
+      return;
+    }
+
+    this.jiraPreviewPending.set(true);
+
+    try {
+      const assets = await this.state.buildJiraPreviewAssets(this.jiraComposerOptions());
+
+      if (this.jiraPreviewVideoObjectUrl) {
+        URL.revokeObjectURL(this.jiraPreviewVideoObjectUrl);
+      }
+
+      this.jiraPreviewVideoObjectUrl = assets.videoPreviewUrl;
+      this.jiraPreviewImageUrl.set(assets.imageDataUrl);
+      this.jiraPreviewVideoUrl.set(assets.videoPreviewUrl);
+    } finally {
+      this.jiraPreviewPending.set(false);
+    }
   }
 
   protected exportPdfReport(): void {
@@ -468,6 +675,26 @@ export class AppComponent {
     this.state.setReaderRate(Number(getFormValue(event)));
   }
 
+  protected setNarratorKeyboardMode(mode: NarratorKeyboardMode): void {
+    this.state.setNarratorKeyboardMode(mode);
+  }
+
+  protected setNarratorCommandProfile(profile: NarratorCommandProfile): void {
+    this.state.setNarratorCommandProfile(profile);
+  }
+
+  protected setNarratorVerbosity(verbosity: NarratorVerbosity): void {
+    this.state.setNarratorVerbosity(verbosity);
+  }
+
+  protected setNarratorInterruptPolicy(policy: NarratorInterruptPolicy): void {
+    this.state.setNarratorInterruptPolicy(policy);
+  }
+
+  protected setNarratorEngineEnabled(enabled: boolean): void {
+    this.state.setNarratorEngineEnabled(enabled);
+  }
+
   protected toggleTheme(): void {
     this.theme.update(theme => {
       const nextTheme = theme === 'light' ? 'dark' : 'light';
@@ -479,35 +706,29 @@ export class AppComponent {
   }
 
   protected toggleSettingsView(): void {
-    this.panelView.update(view => view === 'main' ? 'settings' : 'main');
+    this.panelView.update(view => view === 'settings' ? 'main' : 'settings');
+  }
+
+  protected toggleJiraView(): void {
+    this.panelView.update(view => view === 'jira' ? 'main' : 'jira');
+  }
+
+  protected openSettingsView(): void {
+    this.panelView.set('settings');
+  }
+
+  protected dismissAnalysisError(): void {
+    const analysisError = this.state.analysisError();
+
+    if (!analysisError) {
+      return;
+    }
+
+    this.dismissedAnalysisError.set(analysisError);
   }
 
   protected selectTab(tab: PanelTab): void {
     this.activeTab.set(tab);
-  }
-
-  protected selectCoverageItem(item: WcagCoverageItem): void {
-    const violationId = item.violationIds[0];
-    const violation = violationId ? this.state.violations().find(candidate => candidate.id === violationId) : undefined;
-
-    if (!violation) {
-      return;
-    }
-
-    this.state.setLayerVisibility({
-      ...this.state.layerVisibility(),
-      coverage: true,
-      errors: false,
-      pageOverlay: true,
-    });
-    this.state.setSelectedViolation({selector: violation.selector, violationId: violation.id});
-    this.activeTab.set('coverage');
-  }
-
-  protected isCoverageItemFocused(item: WcagCoverageItem): boolean {
-    const selectedViolation = this.state.selectedViolation();
-
-    return Boolean(selectedViolation && item.violationIds.includes(selectedViolation.violationId));
   }
 
   protected toggleLayer(layerName: LayerName): void {
@@ -518,29 +739,7 @@ export class AppComponent {
     this.state.togglePageOverlay();
   }
 
-  private resolveFindingLayerSelection(
-    selectedFilters: ReadonlySet<LayerFilterItem>,
-    currentVisibility: {readonly coverage: boolean; readonly errors: boolean},
-  ): 'coverage' | 'errors' | null {
-    const wantsCoverage = selectedFilters.has('Coverage');
-    const wantsErrors = selectedFilters.has('Errors');
-
-    if (wantsCoverage && wantsErrors) {
-      return !currentVisibility.coverage && currentVisibility.errors ? 'coverage' : 'errors';
-    }
-
-    if (wantsCoverage) {
-      return 'coverage';
-    }
-
-    if (wantsErrors) {
-      return 'errors';
-    }
-
-    return null;
-  }
-
-  private selectTabForFindingLayer(visibility: {readonly coverage: boolean; readonly errors: boolean; readonly pageOverlay: boolean}): void {
+  private selectTabForFindingLayer(visibility: {readonly errors: boolean; readonly pageOverlay: boolean}): void {
     if (!visibility.pageOverlay) {
       return;
     }
@@ -551,9 +750,6 @@ export class AppComponent {
       return;
     }
 
-    if (visibility.coverage) {
-      this.activeTab.set('coverage');
-    }
   }
 
   protected copyReport(): void {

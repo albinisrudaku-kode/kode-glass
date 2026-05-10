@@ -23,5 +23,8 @@
     "type": "module"
   },
   "permissions": ["activeTab", "downloads", "identity", "sidePanel", "scripting", "storage", "tabCapture", "tabs", "tts"],
-  "host_permissions": ["https://api.atlassian.com/*", "https://auth.atlassian.com/*"]
+  "host_permissions": ["https://api.atlassian.com/*", "https://auth.atlassian.com/*"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' blob: data:; connect-src https://api.atlassian.com https://auth.atlassian.com"
+  }
 }

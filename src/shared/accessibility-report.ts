@@ -56,13 +56,52 @@ export interface AuditSettings {
 }
 
 export interface ReaderModeSettings {
+  readonly commandProfile?: NarratorCommandProfile;
   readonly enabled: boolean;
+  readonly interruptPolicy?: NarratorInterruptPolicy;
   readonly inspectWithMouse: boolean;
+  readonly keyboardMode?: NarratorKeyboardMode;
   readonly lockInteractions: boolean;
+  readonly narratorEngineEnabled?: boolean;
   readonly rate?: number;
   readonly speak: boolean;
+  readonly verbosity?: NarratorVerbosity;
   readonly voiceName?: string;
   readonly voiceURI?: string;
+}
+
+export type NarratorKeyboardMode = 'safe-capture' | 'strict-capture';
+
+export type NarratorCommandProfile = 'hybrid' | 'nvda-jaws' | 'voiceover' | 'windows-narrator';
+
+export type NarratorVerbosity = 'high' | 'low' | 'medium';
+
+export type NarratorInterruptPolicy = 'coalesce' | 'interrupt' | 'queue';
+
+export type NarratorNavigationUnit =
+  | 'button'
+  | 'control'
+  | 'element'
+  | 'form-field'
+  | 'heading'
+  | 'landmark'
+  | 'line'
+  | 'link';
+
+export type NarratorCommandType =
+  | 'activate-current'
+  | 'next-unit'
+  | 'pause-speech'
+  | 'previous-unit'
+  | 'read-current'
+  | 'resume-speech'
+  | 'say-all'
+  | 'stop-speech';
+
+export interface NarratorCommand {
+  readonly type: NarratorCommandType;
+  readonly unit?: NarratorNavigationUnit;
+  readonly value?: boolean;
 }
 
 export interface ElementBounds {
@@ -97,6 +136,7 @@ export interface JiraProjectOption {
 
 export interface JiraIssueTypeOption {
   readonly id: string;
+  readonly isSubtask?: boolean;
   readonly name: string;
 }
 

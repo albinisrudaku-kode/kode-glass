@@ -3,6 +3,8 @@ const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const TerserPlugin = require('terser-webpack-plugin');
+const {BundleAnalyzerPlugin} = require('webpack-bundle-analyzer');
 const {AngularWebpackPlugin} = require('@ngtools/webpack');
 
 module.exports = (env, argv) => {
@@ -67,7 +69,16 @@ module.exports = (env, argv) => {
     },
     optimization: {
       runtimeChunk: false,
-      splitChunks: false
+      splitChunks: false,
+      minimizer: isProduction ? [
+        new TerserPlugin({
+          terserOptions: {
+            compress: {
+              pure_funcs: ['logger.warn', 'logger.error', 'logger.info', 'console.warn', 'console.error', 'console.info', 'console.log'],
+            },
+          },
+        }),
+      ] : [],
     },
     performance: isProduction ? {
       maxAssetSize: extensionBundleBudget,
@@ -96,8 +107,15 @@ module.exports = (env, argv) => {
         ]
       }),
       new webpack.DefinePlugin({
-        __ATLASSIAN_OAUTH_CLIENT_ID__: JSON.stringify(process.env.ATLASSIAN_OAUTH_CLIENT_ID || '')
-      })
+        __ATLASSIAN_OAUTH_CLIENT_ID__: JSON.stringify(process.env.ATLASSIAN_OAUTH_CLIENT_ID || ''),
+        __ATLASSIAN_OAUTH_CLIENT_SECRET__: JSON.stringify(process.env.ATLASSIAN_OAUTH_CLIENT_SECRET || ''),
+        __DEV__: JSON.stringify(!isProduction),
+      }),
+      ...(argv.analyze ? [new BundleAnalyzerPlugin({
+        analyzerMode: 'static',
+        reportFilename: 'bundle-report.html',
+        openAnalyzer: false,
+      })] : [])
     ]
   };
 };

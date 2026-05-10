@@ -1,4 +1,3 @@
-import {computeAccessibleDescription, computeAccessibleName, getRole} from 'dom-accessibility-api';
 import type {
   AccessibilityReport,
   AccessibleNodeSummary,
@@ -9,6 +8,7 @@ import type {
   KodeGlassViolation,
   LandmarkSummary,
   LayerVisibility,
+  NarratorCommand,
   ReaderModeSettings,
   ViolationFilterSettings,
 } from '../shared/accessibility-report';
@@ -18,39 +18,42 @@ import {initialViolationFilterSettings, matchesViolationFilters} from '../shared
 import {createWcagCoverage} from '../shared/wcag-coverage';
 import type {ViolationSelectedPayload} from '../shared/messages';
 import {resolveComponentScopeForElement} from './component-scope';
-
-interface FocusPathPoint {
-  readonly bounds?: ElementBounds;
-  readonly label: string;
-  readonly order: number;
-  readonly selector: string;
-}
-
-interface OverlayBoxOptions {
-  readonly bounds: ElementBounds;
-  readonly color: string;
-  readonly dashArray?: string;
-  readonly fill: string;
-  readonly label: string;
-  readonly selected?: boolean;
-}
-
-interface ViolationRenderTarget {
-  readonly bounds: ElementBounds;
-  readonly element: Element;
-}
-
-const severityColors: Record<KodeGlassViolation['severity'], string> = {
-  critical: '#d9214f',
-  info: '#207ff0',
-  warning: '#d88400',
-};
-
-const overlayFillColors: Record<KodeGlassViolation['severity'], string> = {
-  critical: 'rgba(217, 33, 79, 0.08)',
-  info: 'rgba(32, 127, 240, 0.08)',
-  warning: 'rgba(216, 132, 0, 0.1)',
-};
+import type {FocusPathPoint} from './focus-path-tracker';
+import {renderFocusPath} from './focus-path-tracker';
+import {
+  severityColors,
+  overlayFillColors,
+  type ViolationRenderTarget,
+  renderBox,
+  renderFocusedViolationHalo,
+  renderSelectionBackdrop,
+  renderFocusedElementHalo,
+  renderInspectedElementHalo,
+  truncateLabel,
+  formatCoverageCriteriaLabel,
+  getViolationSummary,
+  getAccessibleName,
+  getAccessibleDescription,
+  getAccessibleRole,
+  getAccessibleState,
+  createPreviewRow,
+  buildPreviewShell,
+  buildIdlePreviewShell,
+  formatViolationEngines,
+  normalizeOverlayText,
+  getViolationFixText,
+} from './violation-renderer';
+import {
+  getElementBySelector,
+  isElementVisibleForOverlay,
+  isOverlayEvent,
+  positionInspectPopover,
+  positionViolationDetail,
+} from './overlay-geometry';
+import {getSpokenSummary, requestReaderSpeak} from './reader-mode';
+import {createBadge} from './violation-renderer';
+import {mapKeyboardEventToNarratorCommand} from './narrator-keymap';
+import {getNarratorTarget, type NarratorTarget} from './narrator-navigation';
 
 const initialLayerVisibility: LayerVisibility = {
   coverage: false,
@@ -61,11 +64,16 @@ const initialLayerVisibility: LayerVisibility = {
 };
 
 const initialReaderMode: ReaderModeSettings = {
+  commandProfile: /mac/i.test(navigator.platform) ? 'voiceover' : 'hybrid',
   enabled: false,
+  interruptPolicy: 'coalesce',
   inspectWithMouse: false,
+  keyboardMode: 'strict-capture',
   lockInteractions: false,
+  narratorEngineEnabled: true,
   rate: 0.92,
   speak: false,
+  verbosity: 'medium',
 };
 
 export class PageOverlay {
@@ -92,10 +100,19 @@ export class PageOverlay {
   private focusListenerAttached = false;
   private clickSelectionAttached = false;
   private inspectListenerAttached = false;
+  private narratorKeyCaptureAttached = false;
+  private readerStateListenersAttached = false;
   private lastPointerSyncAt = 0;
   private activeNodeChanged: (activeNode: AccessibleNodeSummary | null) => void = () => undefined;
   private componentScopeChanged: (payload: ComponentScope | null) => void = () => undefined;
   private violationSelected: (payload: ViolationSelectedPayload | null) => void = () => undefined;
+  private disposed = false;
+  private activeNodeLabelAbortController: AbortController | undefined;
+  private renderRafId: number | undefined;
+  private freeSelectionCleanup: ((bounds: ElementBounds | null) => void) | undefined;
+  private narratorCursorElement: Element | null = null;
+  private sayAllTaskId: number | undefined;
+  private focusedStateSyncRafId: number | undefined;
 
   constructor() {
     this.mount();
@@ -103,35 +120,59 @@ export class PageOverlay {
   }
 
   setLayerVisibility(layerVisibility: LayerVisibility): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.layerVisibility = layerVisibility;
     this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
   setReport(report: AccessibilityReport): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.latestReport = report;
     this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
   setViolationFilters(violationFilters: ViolationFilterSettings): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.violationFilters = violationFilters;
     this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
   setComponentScope(componentScope: ComponentScope | null): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.componentScope = componentScope;
     this.syncRuntimeSubscriptions();
     this.queueRender();
   }
 
   setSelectedViolationFocus(payload: ViolationSelectedPayload | null): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.selectedViolationFocus = payload;
     this.queueRender();
   }
 
   async requestCaptureSnapshot(mode: Extract<EvidenceCaptureMode, 'element' | 'free-select'>): Promise<CaptureBoundsSnapshot | null> {
+    if (this.disposed) {
+      return null;
+    }
+
     const bounds = mode === 'element'
       ? this.getCurrentCaptureTargetBounds()
       : await this.requestFreeSelectionBounds();
@@ -151,6 +192,10 @@ export class PageOverlay {
   }
 
   reset(): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.latestReport = null;
     this.focusPath = [];
     this.focusPathOrder = 0;
@@ -163,6 +208,8 @@ export class PageOverlay {
     this.violationFilters = initialViolationFilterSettings;
     this.componentScope = null;
     this.selectedViolationFocus = null;
+    this.narratorCursorElement = null;
+    this.stopSayAll();
     this.stopMutationObserver();
     this.syncRuntimeSubscriptions();
     this.svg.replaceChildren();
@@ -170,8 +217,52 @@ export class PageOverlay {
     window.speechSynthesis?.cancel();
   }
 
+  dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed = true;
+
+    if (this.renderRafId !== undefined) {
+      cancelAnimationFrame(this.renderRafId);
+      this.renderRafId = undefined;
+    }
+
+    this.freeSelectionCleanup?.(null);
+
+    this.toggleRenderListeners(false);
+    this.toggleFocusListener(false);
+    this.toggleClickSelectionListener(false);
+    this.toggleInspectListener(false);
+    this.toggleNarratorKeyCapture(false);
+    this.toggleReaderStateListeners(false);
+    this.toggleMutationObserver(false);
+
+    if (this.focusedStateSyncRafId !== undefined) {
+      cancelAnimationFrame(this.focusedStateSyncRafId);
+      this.focusedStateSyncRafId = undefined;
+    }
+
+    this.activeNodeLabelAbortController?.abort();
+    this.activeNodeLabelAbortController = undefined;
+
+    this.host.remove();
+  }
+
   setReaderMode(readerMode: ReaderModeSettings): void {
-    this.readerMode = readerMode;
+    if (this.disposed) {
+      return;
+    }
+
+    this.readerMode = {
+      ...readerMode,
+      commandProfile: readerMode.commandProfile ?? initialReaderMode.commandProfile,
+      interruptPolicy: readerMode.interruptPolicy ?? initialReaderMode.interruptPolicy,
+      keyboardMode: readerMode.keyboardMode ?? initialReaderMode.keyboardMode,
+      narratorEngineEnabled: readerMode.narratorEngineEnabled ?? initialReaderMode.narratorEngineEnabled,
+      verbosity: readerMode.verbosity ?? initialReaderMode.verbosity,
+    };
 
     if (!readerMode.inspectWithMouse || readerMode.enabled) {
       this.latestMouseElement = null;
@@ -180,6 +271,7 @@ export class PageOverlay {
 
     if (!readerMode.enabled) {
       window.speechSynthesis?.cancel();
+      this.stopSayAll();
       this.latestFocusedElement = null;
       this.latestSummary = null;
       this.hideActiveNode();
@@ -194,24 +286,44 @@ export class PageOverlay {
   }
 
   onActiveNodeChanged(listener: (activeNode: AccessibleNodeSummary | null) => void): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.activeNodeChanged = listener;
   }
 
   onComponentScopeChanged(listener: (payload: ComponentScope | null) => void): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.componentScopeChanged = listener;
   }
 
   onViolationSelected(listener: (payload: ViolationSelectedPayload | null) => void): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.violationSelected = listener;
   }
 
   getActiveNodeSummary(element: Element): AccessibleNodeSummary {
+    if (this.disposed) {
+      throw new Error('PageOverlay has been disposed');
+    }
+
+    const role = getAccessibleRole(element);
+    const accessibleName = getAccessibleName(element);
+    const fallbackName = this.getFallbackNarrationName(element, role);
+
     return {
       bounds: getElementBounds(element),
       componentScope: resolveComponentScopeForElement(element) ?? undefined,
       description: getAccessibleDescription(element),
-      name: getAccessibleName(element),
-      role: getAccessibleRole(element),
+      name: accessibleName || fallbackName,
+      role,
       selector: getElementSelector(element),
       state: getAccessibleState(element),
     };
@@ -487,8 +599,10 @@ export class PageOverlay {
     this.activeNodeLabel.setAttribute('role', 'status');
     this.activeNodeLabel.setAttribute('aria-live', 'polite');
     this.activeNodeLabel.setAttribute('aria-label', 'Accessibility preview');
+    this.activeNodeLabelAbortController = new AbortController();
+    const {signal} = this.activeNodeLabelAbortController;
     ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'touchstart', 'touchend'].forEach(eventName => {
-      this.activeNodeLabel.addEventListener(eventName, event => event.stopPropagation(), true);
+      this.activeNodeLabel.addEventListener(eventName, event => event.stopPropagation(), {capture: true, signal});
     });
     this.shadowRoot.append(style, this.svg, this.activeNodeLabel);
     document.documentElement.append(this.host);
@@ -500,6 +614,8 @@ export class PageOverlay {
     this.toggleFocusListener(this.needsFocusTracking());
     this.toggleClickSelectionListener(this.needsClickSelection());
     this.toggleInspectListener(this.needsInspectTracking());
+    this.toggleNarratorKeyCapture(this.needsNarratorKeyCapture());
+    this.toggleReaderStateListeners(this.needsReaderStateTracking());
     this.toggleMutationObserver(this.needsMutationObserver());
   }
 
@@ -575,6 +691,51 @@ export class PageOverlay {
     this.inspectListenerAttached = shouldAttach;
   }
 
+  private toggleNarratorKeyCapture(shouldAttach: boolean): void {
+    if (this.narratorKeyCaptureAttached === shouldAttach) {
+      return;
+    }
+
+    if (shouldAttach) {
+      window.addEventListener('keydown', this.handleNarratorKeydown, true);
+      document.addEventListener('keydown', this.handleNarratorKeydown, true);
+      window.addEventListener('keyup', this.suppressNarratorMappedKeyup, true);
+      document.addEventListener('keyup', this.suppressNarratorMappedKeyup, true);
+    } else {
+      window.removeEventListener('keydown', this.handleNarratorKeydown, true);
+      document.removeEventListener('keydown', this.handleNarratorKeydown, true);
+      window.removeEventListener('keyup', this.suppressNarratorMappedKeyup, true);
+      document.removeEventListener('keyup', this.suppressNarratorMappedKeyup, true);
+    }
+
+    this.narratorKeyCaptureAttached = shouldAttach;
+  }
+
+  private toggleReaderStateListeners(shouldAttach: boolean): void {
+    if (this.readerStateListenersAttached === shouldAttach) {
+      return;
+    }
+
+    if (shouldAttach) {
+      document.addEventListener('input', this.scheduleFocusedStateSync, true);
+      document.addEventListener('change', this.scheduleFocusedStateSync, true);
+      document.addEventListener('click', this.scheduleFocusedStateSync, true);
+      document.addEventListener('keyup', this.scheduleFocusedStateSync, true);
+    } else {
+      document.removeEventListener('input', this.scheduleFocusedStateSync, true);
+      document.removeEventListener('change', this.scheduleFocusedStateSync, true);
+      document.removeEventListener('click', this.scheduleFocusedStateSync, true);
+      document.removeEventListener('keyup', this.scheduleFocusedStateSync, true);
+
+      if (this.focusedStateSyncRafId !== undefined) {
+        cancelAnimationFrame(this.focusedStateSyncRafId);
+        this.focusedStateSyncRafId = undefined;
+      }
+    }
+
+    this.readerStateListenersAttached = shouldAttach;
+  }
+
   private toggleMutationObserver(shouldObserve: boolean): void {
     if (shouldObserve) {
       this.startMutationObserver();
@@ -591,7 +752,10 @@ export class PageOverlay {
     }
 
     if (!this.mutationObserver) {
-      this.mutationObserver = new MutationObserver(this.queueRender);
+      this.mutationObserver = new MutationObserver(() => {
+        this.queueRender();
+        this.scheduleFocusedStateSync();
+      });
     }
 
     this.mutationObserver.observe(document.documentElement, {attributes: true, childList: true, subtree: true});
@@ -630,6 +794,16 @@ export class PageOverlay {
     return this.readerMode.inspectWithMouse && !this.readerMode.enabled;
   }
 
+  private needsNarratorKeyCapture(): boolean {
+    return this.readerMode.enabled
+      && this.readerMode.narratorEngineEnabled !== false
+      && this.readerMode.keyboardMode === 'strict-capture';
+  }
+
+  private needsReaderStateTracking(): boolean {
+    return this.readerMode.enabled;
+  }
+
   private shouldRenderFrame(): boolean {
     const hasOverlayLayers = this.latestReport !== null
       && this.layerVisibility.pageOverlay
@@ -641,6 +815,10 @@ export class PageOverlay {
   }
 
   private readonly queueRender = (): void => {
+    if (this.disposed) {
+      return;
+    }
+
     if (!this.shouldRenderFrame() && this.svg.childElementCount === 0) {
       return;
     }
@@ -651,9 +829,25 @@ export class PageOverlay {
 
     this.renderQueued = true;
 
-    requestAnimationFrame(() => {
+    this.renderRafId = requestAnimationFrame(() => {
+      this.renderRafId = undefined;
       this.renderQueued = false;
       this.render();
+    });
+  };
+
+  private readonly scheduleFocusedStateSync = (): void => {
+    if (!this.readerMode.enabled || !this.latestFocusedElement || this.disposed) {
+      return;
+    }
+
+    if (this.focusedStateSyncRafId !== undefined) {
+      return;
+    }
+
+    this.focusedStateSyncRafId = requestAnimationFrame(() => {
+      this.focusedStateSyncRafId = undefined;
+      this.syncFocusedSummaryIfChanged();
     });
   };
 
@@ -679,24 +873,20 @@ export class PageOverlay {
         && visibleViolations.some(violation => this.isSelectedViolation(violation));
 
       if (hasFocusedViolation) {
-        this.renderSelectionBackdrop();
+        renderSelectionBackdrop(this.svg);
       }
 
       if (this.layerVisibility.errors) {
         visibleViolations.forEach((violation, index) => this.renderViolation(violation, index));
       }
 
-      const selectedViolation = visibleViolations.find(violation => this.isSelectedViolation(violation));
-
-      if (selectedViolation && !this.readerMode.enabled) {
-        this.renderViolationDetail(selectedViolation);
-      } else if (!this.readerMode.enabled && !this.readerMode.inspectWithMouse) {
+      if (!this.readerMode.enabled && !this.readerMode.inspectWithMouse) {
         this.hideActiveNode();
       }
     }
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.focusPath) {
-      this.renderFocusPath();
+      renderFocusPath(this.svg, this.focusPath);
     }
 
     if (this.readerMode.enabled && this.latestSummary?.bounds) {
@@ -739,10 +929,10 @@ export class PageOverlay {
     const selected = this.isSelectedViolation(violation);
 
     if (selected) {
-      this.renderFocusedViolationHalo(bounds);
+      renderFocusedViolationHalo(this.svg, bounds);
     }
 
-    this.renderBox({
+    renderBox(this.svg, {
       bounds,
       color: severityColors[violation.severity],
       fill: overlayFillColors[violation.severity],
@@ -770,7 +960,7 @@ export class PageOverlay {
       return;
     }
 
-    this.renderBox({
+    renderBox(this.svg, {
       bounds: target.bounds,
       color: '#d9214f',
       dashArray: '3 3',
@@ -823,23 +1013,23 @@ export class PageOverlay {
     const body = document.createElement('div');
     body.className = 'panel-body';
     body.append(
-      this.createPreviewRow('Element', `${summary.role}${summary.name ? ` - ${summary.name}` : ' - unnamed'}`),
-      this.createPreviewRow('Selector', violation.selector),
-      this.createPreviewRow('Source', formatViolationEngines(violation.sourceEngines ?? [violation.engine])),
+      createPreviewRow('Element', `${summary.role}${summary.name ? ` - ${summary.name}` : ' - unnamed'}`),
+      createPreviewRow('Selector', violation.selector),
+      createPreviewRow('Source', formatViolationEngines(violation.sourceEngines ?? [violation.engine])),
     );
 
     if (violation.description) {
-      body.append(this.createPreviewRow('What failed', normalizeOverlayText(violation.description)));
+      body.append(createPreviewRow('What failed', normalizeOverlayText(violation.description)));
     }
 
-    body.append(this.createPreviewRow('Fix', getViolationFixText(violation)));
+    body.append(createPreviewRow('Fix', getViolationFixText(violation)));
 
     if (summary.componentScope) {
-      body.append(this.createPreviewRow('Component', summary.componentScope.label));
+      body.append(createPreviewRow('Component', summary.componentScope.label));
     }
 
     if (violation.helpUrl) {
-      body.append(this.createPreviewRow('Rule guide', violation.helpUrl));
+      body.append(createPreviewRow('Rule guide', violation.helpUrl));
     }
 
     shell.append(body);
@@ -848,7 +1038,7 @@ export class PageOverlay {
     this.activeNodeLabel.classList.remove('reader-subtitle', 'inspect-popover');
     this.activeNodeLabel.classList.add('violation-detail');
     this.activeNodeLabel.style.display = 'block';
-    this.positionViolationDetail(target.bounds);
+    positionViolationDetail(this.activeNodeLabel, target.bounds);
   }
 
   private renderLandmark(landmark: LandmarkSummary, index: number): void {
@@ -857,156 +1047,12 @@ export class PageOverlay {
     }
 
     const label = landmark.label ? `${landmark.role}: ${landmark.label}` : landmark.role;
-    this.renderBox({
+    renderBox(this.svg, {
       bounds: landmark.bounds,
       color: '#008f7a',
       dashArray: '6 4',
       fill: 'rgba(0, 143, 122, 0.07)',
       label: `${index + 1}. ${truncateLabel(label)}`,
-    });
-  }
-
-  private renderBox(options: OverlayBoxOptions): void {
-    const {bounds, color, dashArray = '', fill, label, selected = false} = options;
-    const x = bounds.x - window.scrollX;
-    const y = bounds.y - window.scrollY;
-    const width = bounds.width;
-    const height = bounds.height;
-
-    if (x + width < 0 || y + height < 0 || x > window.innerWidth || y > window.innerHeight) {
-      return;
-    }
-
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', String(x));
-    rect.setAttribute('y', String(y));
-    rect.setAttribute('width', String(width));
-    rect.setAttribute('height', String(height));
-    rect.setAttribute('fill', fill);
-    rect.setAttribute('stroke', color);
-    rect.setAttribute('stroke-width', selected ? '4' : '2');
-    rect.setAttribute('rx', '4');
-
-    if (dashArray) {
-      rect.setAttribute('stroke-dasharray', dashArray);
-    }
-
-    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    group.append(rect, this.createBadge(label, color, x, y, height));
-
-    this.svg.append(group);
-  }
-
-  private createBadge(label: string, color: string, x: number, y: number, height: number): SVGGElement {
-    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    const labelText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    const labelBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    const labelHeight = 18;
-    const labelGap = 4;
-    const labelWidth = Math.max(28, Math.min(128, label.length * 7 + 12));
-    const labelX = Math.max(8, Math.min(x, window.innerWidth - labelWidth - 8));
-    const preferredLabelY = y - labelHeight - labelGap;
-    const fallbackLabelY = y + height + labelGap;
-    const labelY = preferredLabelY >= 8
-      ? preferredLabelY
-      : Math.max(8, Math.min(fallbackLabelY, window.innerHeight - labelHeight - 8));
-
-    labelText.textContent = label;
-    labelText.setAttribute('x', String(labelX + 6));
-    labelText.setAttribute('y', String(labelY + 13));
-    labelText.setAttribute('fill', '#ffffff');
-    labelText.setAttribute('font-family', 'Arial, sans-serif');
-    labelText.setAttribute('font-size', '11');
-    labelText.setAttribute('font-weight', '700');
-
-    labelBackground.setAttribute('x', String(labelX));
-    labelBackground.setAttribute('y', String(labelY));
-    labelBackground.setAttribute('width', String(labelWidth));
-    labelBackground.setAttribute('height', String(labelHeight));
-    labelBackground.setAttribute('rx', '9');
-    labelBackground.setAttribute('fill', color);
-
-    group.append(labelBackground, labelText);
-
-    return group;
-  }
-
-  private renderFocusedViolationHalo(bounds: ElementBounds): void {
-    const x = bounds.x - window.scrollX;
-    const y = bounds.y - window.scrollY;
-    const width = bounds.width;
-    const height = bounds.height;
-    const halo = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    halo.setAttribute('x', String(Math.max(2, x - 8)));
-    halo.setAttribute('y', String(Math.max(2, y - 8)));
-    halo.setAttribute('width', String(width + 16));
-    halo.setAttribute('height', String(height + 16));
-    halo.setAttribute('rx', '10');
-    halo.setAttribute('fill', 'rgba(251, 191, 36, 0.08)');
-    halo.setAttribute('stroke', '#f59e0b');
-    halo.setAttribute('stroke-width', '3');
-    halo.setAttribute('stroke-dasharray', '8 6');
-    halo.setAttribute('filter', 'drop-shadow(0 10px 20px rgb(245 158 11 / 35%))');
-    halo.setAttribute('pointer-events', 'none');
-    this.svg.append(halo);
-  }
-
-  private renderSelectionBackdrop(): void {
-    const backdrop = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    backdrop.setAttribute('x', '0');
-    backdrop.setAttribute('y', '0');
-    backdrop.setAttribute('width', String(window.innerWidth));
-    backdrop.setAttribute('height', String(window.innerHeight));
-    backdrop.setAttribute('fill', 'rgba(15, 23, 42, 0.18)');
-    backdrop.setAttribute('pointer-events', 'none');
-    this.svg.append(backdrop);
-  }
-
-  private renderFocusPath(): void {
-    const visiblePoints = this.focusPath.filter(point => point.bounds);
-
-    visiblePoints.forEach((point, index) => {
-      const bounds = point.bounds;
-
-      if (!bounds) {
-        return;
-      }
-
-      const centerX = bounds.x - window.scrollX + bounds.width / 2;
-      const centerY = bounds.y - window.scrollY + bounds.height / 2;
-      const previousBounds = visiblePoints[index - 1]?.bounds;
-
-      if (previousBounds) {
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', String(previousBounds.x - window.scrollX + previousBounds.width / 2));
-        line.setAttribute('y1', String(previousBounds.y - window.scrollY + previousBounds.height / 2));
-        line.setAttribute('x2', String(centerX));
-        line.setAttribute('y2', String(centerY));
-        line.setAttribute('stroke', '#4f46e5');
-        line.setAttribute('stroke-width', '2');
-        line.setAttribute('stroke-dasharray', '4 4');
-        this.svg.append(line);
-      }
-
-      const label = String(point.order);
-      const radius = Math.max(10, label.length * 4 + 7);
-      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      circle.setAttribute('cx', String(centerX));
-      circle.setAttribute('cy', String(centerY));
-      circle.setAttribute('r', String(radius));
-      circle.setAttribute('fill', '#4f46e5');
-
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.textContent = label;
-      text.setAttribute('x', String(centerX));
-      text.setAttribute('y', String(centerY + 4));
-      text.setAttribute('fill', '#ffffff');
-      text.setAttribute('font-family', 'Arial, sans-serif');
-      text.setAttribute('font-size', '11');
-      text.setAttribute('font-weight', '700');
-      text.setAttribute('text-anchor', 'middle');
-
-      this.svg.append(circle, text);
     });
   }
 
@@ -1019,25 +1065,10 @@ export class PageOverlay {
 
     const x = bounds.x - window.scrollX;
     const y = bounds.y - window.scrollY;
-    const width = bounds.width;
     const height = bounds.height;
 
-    if (x + width < 0 || y + height < 0 || x > window.innerWidth || y > window.innerHeight) {
-      return;
-    }
-
-    const halo = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    halo.setAttribute('x', String(Math.max(4, x - 6)));
-    halo.setAttribute('y', String(Math.max(4, y - 6)));
-    halo.setAttribute('width', String(width + 12));
-    halo.setAttribute('height', String(height + 12));
-    halo.setAttribute('fill', 'rgba(82, 110, 211, 0.12)');
-    halo.setAttribute('stroke', '#526ed3');
-    halo.setAttribute('stroke-width', '3');
-    halo.setAttribute('rx', '8');
-    halo.setAttribute('filter', 'drop-shadow(0 8px 18px rgb(82 110 211 / 26%))');
-
-    this.svg.append(halo, this.createBadge('Focus', '#526ed3', x, y, height));
+    renderFocusedElementHalo(this.svg, bounds);
+    this.svg.append(createBadge('Focus', '#526ed3', x, y, height));
   }
 
   private renderInspectedElement(summary: AccessibleNodeSummary): void {
@@ -1049,26 +1080,10 @@ export class PageOverlay {
 
     const x = bounds.x - window.scrollX;
     const y = bounds.y - window.scrollY;
-    const width = bounds.width;
     const height = bounds.height;
 
-    if (x + width < 0 || y + height < 0 || x > window.innerWidth || y > window.innerHeight) {
-      return;
-    }
-
-    const halo = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    halo.setAttribute('x', String(Math.max(4, x - 5)));
-    halo.setAttribute('y', String(Math.max(4, y - 5)));
-    halo.setAttribute('width', String(width + 10));
-    halo.setAttribute('height', String(height + 10));
-    halo.setAttribute('fill', 'rgba(82, 110, 211, 0.08)');
-    halo.setAttribute('stroke', '#526ed3');
-    halo.setAttribute('stroke-width', '2');
-    halo.setAttribute('stroke-dasharray', '7 5');
-    halo.setAttribute('rx', '8');
-    halo.setAttribute('filter', 'drop-shadow(0 8px 18px rgb(82 110 211 / 22%))');
-
-    this.svg.append(halo, this.createBadge('Inspect', '#526ed3', x, y, height));
+    renderInspectedElementHalo(this.svg, bounds);
+    this.svg.append(createBadge('Inspect', '#526ed3', x, y, height));
   }
 
   private readonly captureFocus = (event: FocusEvent): void => {
@@ -1087,8 +1102,66 @@ export class PageOverlay {
       order: this.focusPathOrder,
       selector: summary.selector,
     }];
-    this.showReaderSubtitle(summary);
+
+    if (this.readerMode.enabled) {
+      this.narratorCursorElement = event.target;
+      this.showReaderSubtitle(summary);
+    } else {
+      this.activeNodeChanged(summary);
+    }
+
     this.queueRender();
+  };
+
+  private syncFocusedSummaryIfChanged(): void {
+    const focusedElement = this.latestFocusedElement;
+
+    if (!focusedElement || !focusedElement.isConnected || !this.readerMode.enabled) {
+      return;
+    }
+
+    const nextSummary = this.getActiveNodeSummary(focusedElement);
+
+    if (this.latestSummary && this.summariesMatch(this.latestSummary, nextSummary)) {
+      return;
+    }
+
+    this.latestSummary = nextSummary;
+    this.showReaderSubtitle(nextSummary);
+    this.queueRender();
+  }
+
+  private readonly handleNarratorKeydown = (event: KeyboardEvent): void => {
+    if (!this.readerMode.enabled || this.readerMode.keyboardMode !== 'strict-capture') {
+      return;
+    }
+
+    const command = mapKeyboardEventToNarratorCommand(event, this.readerMode.commandProfile ?? 'hybrid');
+
+    if (!command) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    this.applyNarratorCommand(command);
+  };
+
+  private readonly suppressNarratorMappedKeyup = (event: KeyboardEvent): void => {
+    if (!this.readerMode.enabled || this.readerMode.keyboardMode !== 'strict-capture') {
+      return;
+    }
+
+    const command = mapKeyboardEventToNarratorCommand(event, this.readerMode.commandProfile ?? 'hybrid');
+
+    if (!command) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
   };
 
   private readonly selectViolationFromPointer = (event: MouseEvent): void => {
@@ -1096,27 +1169,30 @@ export class PageOverlay {
       return;
     }
 
-    if (this.isOverlayEvent(event)) {
+    if (isOverlayEvent(this.host, event)) {
       return;
     }
 
-    const violation = this.getViolationAtPoint(event.clientX + window.scrollX, event.clientY + window.scrollY);
+    if (this.readerMode.inspectWithMouse) {
+      this.latestMouseElement = null;
+      this.latestMouseSummary = null;
+      this.componentScopeChanged(null);
 
-    if (violation) {
+      return;
+    }
+
+    const violationAtPointer = this.getViolationAtPoint(event.pageX, event.pageY);
+
+    if (violationAtPointer) {
       event.preventDefault();
       event.stopPropagation();
-      this.selectViolation(violation);
+      this.selectViolation(violationAtPointer);
+      this.componentScopeChanged(null);
 
-      return;
-    }
-
-    if (!this.readerMode.inspectWithMouse) {
       return;
     }
 
     if (!(event.target instanceof Element)) {
-      this.componentScopeChanged(null);
-
       return;
     }
 
@@ -1139,7 +1215,7 @@ export class PageOverlay {
   };
 
   private readonly showActiveNode = (event: MouseEvent): void => {
-    if (!this.readerMode.inspectWithMouse || this.readerMode.enabled || !(event.target instanceof Element) || this.isOverlayEvent(event)) {
+    if (!this.readerMode.inspectWithMouse || this.readerMode.enabled || !(event.target instanceof Element) || isOverlayEvent(this.host, event)) {
       return;
     }
 
@@ -1152,7 +1228,7 @@ export class PageOverlay {
     this.lastPointerSyncAt = now;
 
     if (event.target === this.latestMouseElement) {
-      this.positionInspectPopover(event);
+      positionInspectPopover(this.activeNodeLabel, event);
 
       return;
     }
@@ -1161,11 +1237,11 @@ export class PageOverlay {
 
     const summary = this.getActiveNodeSummary(event.target);
     this.latestMouseSummary = summary;
-    this.renderPreview(summary, false);
+    this.activeNodeLabel.replaceChildren(buildPreviewShell(summary, false));
     this.activeNodeLabel.classList.add('inspect-popover');
     this.activeNodeLabel.classList.remove('reader-subtitle', 'violation-detail');
     this.activeNodeLabel.style.display = 'block';
-    this.positionInspectPopover(event);
+    positionInspectPopover(this.activeNodeLabel, event);
     this.activeNodeChanged(summary);
     this.queueRender();
   };
@@ -1195,16 +1271,19 @@ export class PageOverlay {
     }
   };
 
-  private showReaderSubtitle(summary: AccessibleNodeSummary): void {
+  private showReaderSubtitle(
+    summary: AccessibleNodeSummary,
+    context?: {readonly index?: number; readonly total?: number; readonly unit?: NarratorTarget['unit']},
+  ): void {
     if (!this.readerMode.enabled) {
       this.activeNodeChanged(summary);
 
       return;
     }
 
-    const text = getSpokenSummary(summary);
+    const text = getSpokenSummary(summary, this.readerMode, context);
 
-    this.renderPreview(summary, true);
+    this.activeNodeLabel.replaceChildren(buildPreviewShell(summary, true));
     this.activeNodeLabel.classList.remove('inspect-popover', 'violation-detail');
     this.activeNodeLabel.classList.add('reader-subtitle');
     this.activeNodeLabel.style.display = 'block';
@@ -1218,7 +1297,7 @@ export class PageOverlay {
   }
 
   private showReaderIdleSubtitle(): void {
-    this.renderIdlePreview();
+    this.activeNodeLabel.replaceChildren(buildIdlePreviewShell());
     this.activeNodeLabel.classList.remove('inspect-popover', 'violation-detail');
     this.activeNodeLabel.classList.add('reader-subtitle');
     this.activeNodeLabel.style.display = 'block';
@@ -1226,153 +1305,109 @@ export class PageOverlay {
     this.activeNodeLabel.style.top = '';
   }
 
-  private renderPreview(summary: AccessibleNodeSummary, includeSelector: boolean): void {
-    const previewDetails = getPreviewDetails(summary.state);
-    const shell = document.createElement('div');
-    shell.className = 'glass-panel';
-
-    const header = document.createElement('div');
-    header.className = 'panel-header';
-
-    const roleLabel = document.createElement('div');
-    roleLabel.className = 'role-label';
-    roleLabel.textContent = summary.role || 'element';
-
-    const title = document.createElement('div');
-    title.className = 'element-title';
-    title.textContent = summary.name || 'Unnamed element';
-
-    header.append(roleLabel, title);
-
-    if (summary.description) {
-      const description = document.createElement('div');
-      description.className = 'element-description';
-      description.textContent = summary.description;
-      header.append(description);
+  applyNarratorCommand(command: NarratorCommand): void {
+    if (!this.readerMode.enabled || this.readerMode.narratorEngineEnabled === false) {
+      return;
     }
 
-    shell.append(header);
+    if (command.type === 'read-current') {
+      if (this.latestSummary) {
+        this.showReaderSubtitle(this.latestSummary);
+      }
 
-    const body = document.createElement('div');
-    body.className = 'panel-body';
-
-    if (previewDetails.states.length) {
-      const stateTags = document.createElement('div');
-      stateTags.className = 'state-tags';
-
-      previewDetails.states.slice(0, 6).forEach(state => {
-        const tag = document.createElement('span');
-        tag.className = 'state-tag';
-        tag.textContent = state;
-        stateTags.append(tag);
-      });
-
-      body.append(stateTags);
+      return;
     }
 
-    if (previewDetails.destination) {
-      body.append(this.createPreviewRow('Destination', previewDetails.destination));
+    if (command.type === 'stop-speech') {
+      this.stopSayAll();
+      this.sendSpeechControl('stop');
+      return;
     }
 
-    if (includeSelector) {
-      body.append(this.createPreviewRow('Selector', summary.selector));
+    if (command.type === 'pause-speech') {
+      this.sendSpeechControl('pause');
+      return;
     }
 
-    body.append(this.createPreviewRow('Component', summary.componentScope?.label ?? 'Unknown component'));
-
-    shell.append(body);
-
-    this.activeNodeLabel.replaceChildren(shell);
-  }
-
-  private renderIdlePreview(): void {
-    const shell = document.createElement('div');
-    shell.className = 'glass-panel';
-
-    const header = document.createElement('div');
-    header.className = 'panel-header';
-
-    const roleLabel = document.createElement('div');
-    roleLabel.className = 'role-label';
-    roleLabel.textContent = 'idle';
-
-    const title = document.createElement('div');
-    title.className = 'element-title';
-    title.textContent = 'No focused element';
-
-    header.append(roleLabel, title);
-    shell.append(header);
-
-    this.activeNodeLabel.replaceChildren(shell);
-  }
-
-  private createPreviewRow(label: string, value: string): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'data-row';
-
-    const rowLabel = document.createElement('div');
-    rowLabel.className = 'data-label';
-    rowLabel.textContent = label;
-
-    const rowValue = document.createElement('div');
-    rowValue.className = 'data-value';
-
-    if (label === 'Destination' && isUrlLike(value)) {
-      const link = document.createElement('a');
-      link.href = value;
-      link.rel = 'noreferrer noopener';
-      link.target = '_blank';
-      link.textContent = value;
-      rowValue.append(link);
-    } else {
-      rowValue.textContent = value;
+    if (command.type === 'resume-speech') {
+      this.sendSpeechControl('resume');
+      return;
     }
 
-    row.append(rowLabel, rowValue);
+    if (command.type === 'activate-current') {
+      const target = this.narratorCursorElement;
 
-    return row;
+      if (target instanceof HTMLElement) {
+        target.click();
+      }
+
+      return;
+    }
+
+    if (command.type === 'say-all') {
+      if (command.value) {
+        this.startSayAll();
+      } else {
+        this.stopSayAll();
+      }
+
+      return;
+    }
+
+    if ((command.type === 'next-unit' || command.type === 'previous-unit') && command.unit) {
+      const direction = command.type === 'next-unit' ? 'next' : 'previous';
+      const target = getNarratorTarget(command.unit, this.narratorCursorElement, direction);
+
+      if (target) {
+        this.moveNarratorCursorToTarget(target);
+      }
+    }
   }
 
-  private positionInspectPopover(event: MouseEvent): void {
-    const padding = 12;
-    const gap = 14;
-    const rect = this.activeNodeLabel.getBoundingClientRect();
-    const availableRight = window.innerWidth - event.clientX;
-    const left = availableRight > rect.width + gap + padding
-      ? event.clientX + gap
-      : event.clientX - rect.width - gap;
-    const top = event.clientY + rect.height + gap + padding < window.innerHeight
-      ? event.clientY + gap
-      : event.clientY - rect.height - gap;
+  private moveNarratorCursorToTarget(target: NarratorTarget): void {
+    const element = target.element;
+    this.narratorCursorElement = element;
 
-    this.activeNodeLabel.style.left = `${Math.max(padding, Math.min(left, window.innerWidth - rect.width - padding))}px`;
-    this.activeNodeLabel.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - rect.height - padding))}px`;
+    if (element instanceof HTMLElement) {
+      element.focus({preventScroll: false});
+      element.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    }
+
+    const summary = this.getActiveNodeSummary(element);
+    this.latestSummary = summary;
+    this.latestFocusedElement = element;
+    this.showReaderSubtitle(summary, {
+      index: target.index,
+      total: target.total,
+      unit: target.unit,
+    });
+    this.queueRender();
   }
 
-  private positionViolationDetail(bounds: ElementBounds): void {
-    const padding = 12;
-    const gap = 14;
-    const rect = this.activeNodeLabel.getBoundingClientRect();
-    const viewportX = bounds.x - window.scrollX;
-    const viewportY = bounds.y - window.scrollY;
-    const rightSpace = window.innerWidth - (viewportX + bounds.width);
-    const leftSpace = viewportX;
-    const topSpace = viewportY;
-    const bottomSpace = window.innerHeight - (viewportY + bounds.height);
+  private startSayAll(): void {
+    this.stopSayAll();
 
-    const left = rightSpace >= rect.width + gap + padding || rightSpace >= leftSpace
-      ? viewportX + bounds.width + gap
-      : viewportX - rect.width - gap;
-    const top = bottomSpace >= rect.height + gap + padding || bottomSpace >= topSpace
-      ? viewportY
-      : viewportY + bounds.height - rect.height;
+    const sayAllTaskId = window.setInterval(() => {
+      this.applyNarratorCommand({type: 'next-unit', unit: 'line'});
+    }, 1100);
 
-    this.activeNodeLabel.style.left = `${Math.max(padding, Math.min(left, window.innerWidth - rect.width - padding))}px`;
-    this.activeNodeLabel.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - rect.height - padding))}px`;
+    this.sayAllTaskId = sayAllTaskId;
   }
 
-  private isOverlayEvent(event: Event): boolean {
-    return event.composedPath().includes(this.host);
+  private stopSayAll(): void {
+    clearInterval(this.sayAllTaskId);
+    this.sayAllTaskId = undefined;
+  }
+
+  private sendSpeechControl(action: 'pause' | 'resume' | 'stop'): void {
+    if (!chrome.runtime?.id) {
+      return;
+    }
+
+    void chrome.runtime.sendMessage({
+      payload: {action},
+      type: RuntimeMessageType.ReaderSpeechControlRequested,
+    });
   }
 
   private getViolationAtPoint(x: number, y: number): KodeGlassViolation | null {
@@ -1406,13 +1441,55 @@ export class PageOverlay {
   }
 
   private shouldRenderViolationElement(element: Element): boolean {
-    if (!isElementVisibleForOverlay(element)) {
+    return isElementVisibleForOverlay(element);
+  }
+
+  private summariesMatch(previous: AccessibleNodeSummary, next: AccessibleNodeSummary): boolean {
+    if (previous.name !== next.name || previous.role !== next.role || previous.description !== next.description || previous.selector !== next.selector) {
       return false;
     }
 
-    const activeModal = getActiveModalElement();
+    if (previous.state.length !== next.state.length) {
+      return false;
+    }
 
-    return !activeModal || activeModal.contains(element);
+    return previous.state.every((state, index) => state === next.state[index]);
+  }
+
+  private getFallbackNarrationName(element: Element, role: string): string {
+    if (this.isInteractiveNarrationRole(role)) {
+      return '';
+    }
+
+    const readableText = (element instanceof HTMLElement ? element.innerText : element.textContent)
+      ?.replace(/\s+/g, ' ')
+      .trim();
+
+    if (!readableText) {
+      return '';
+    }
+
+    return readableText.slice(0, 140);
+  }
+
+  private isInteractiveNarrationRole(role: string): boolean {
+    return new Set([
+      'button',
+      'checkbox',
+      'combobox',
+      'link',
+      'listbox',
+      'menuitem',
+      'option',
+      'radio',
+      'searchbox',
+      'slider',
+      'spinbutton',
+      'switch',
+      'tab',
+      'textbox',
+      'treeitem',
+    ]).has(role.trim().toLowerCase());
   }
 
   private getRenderableViolations(): readonly KodeGlassViolation[] {
@@ -1535,6 +1612,7 @@ export class PageOverlay {
       document.body.style.cursor = 'crosshair';
 
       const cleanup = (result: ElementBounds | null): void => {
+        this.freeSelectionCleanup = undefined;
         layer.removeEventListener('pointerdown', onPointerDown, true);
         layer.removeEventListener('pointermove', onPointerMove, true);
         layer.removeEventListener('pointerup', onPointerUp, true);
@@ -1544,6 +1622,8 @@ export class PageOverlay {
         document.body.style.cursor = previousCursor;
         resolve(result);
       };
+
+      this.freeSelectionCleanup = cleanup;
 
       const updateBox = (): void => {
         const left = Math.min(startX, latestX);
@@ -1623,306 +1703,4 @@ export class PageOverlay {
     });
   }
 
-}
-
-function getSpokenSummary(summary: AccessibleNodeSummary): string {
-  const title = summary.name || 'Unnamed element';
-  const description = summary.description ? `. ${summary.description}` : '';
-  const previewDetails = getPreviewDetails(summary.state);
-  const state = previewDetails.states.length ? `. ${previewDetails.states.join('. ')}` : '';
-  const destination = previewDetails.destination ? `. Destination: ${previewDetails.destination}` : '';
-
-  return `${title}. ${summary.role}${description}${state}${destination}`;
-}
-
-function getPreviewDetails(states: readonly string[]): {readonly destination?: string; readonly states: readonly string[]} {
-  const destinationPrefix = 'destination: ';
-  const destination = states.find(state => state.toLowerCase().startsWith(destinationPrefix))?.slice(destinationPrefix.length).trim();
-
-  return {
-    destination,
-    states: states.filter(state => !state.toLowerCase().startsWith(destinationPrefix)),
-  };
-}
-
-function requestReaderSpeak(text: string, readerMode: ReaderModeSettings): void {
-  if (!chrome.runtime?.id) {
-    return;
-  }
-
-  void chrome.runtime.sendMessage({
-    payload: {readerMode, text},
-    type: RuntimeMessageType.ReaderSpeakRequested,
-  });
-}
-
-function truncateLabel(label: string): string {
-  return label.length > 22 ? `${label.slice(0, 19).trim()}...` : label;
-}
-
-function formatCoverageCriteriaLabel(criteria: readonly string[]): string {
-  const visibleCriteria = criteria.slice(0, 2).join(', ');
-  const suffix = criteria.length > 2 ? ` +${criteria.length - 2}` : '';
-
-  return `WCAG ${visibleCriteria}${suffix}`;
-}
-
-function getViolationSummary(violation: KodeGlassViolation): string {
-  const summary = normalizeOverlayText(violation.title ?? violation.summary).replace(/^Fix any of the following:\s*/i, '');
-
-  if (violation.ruleId === 'button-name') {
-    return 'Button has no accessible name';
-  }
-
-  if (violation.ruleId === 'link-name') {
-    return 'Link has no accessible name';
-  }
-
-  if (violation.ruleId === 'color-contrast') {
-    return 'Text contrast is too low';
-  }
-
-  if (violation.ruleId === 'image-alt') {
-    return 'Image is missing alternate text';
-  }
-
-  if (violation.ruleId === 'target-size') {
-    return 'Tap target is too small';
-  }
-
-  return summary || violation.ruleId;
-}
-
-function getViolationFixText(violation: KodeGlassViolation): string {
-  const guidance = normalizeOverlayText(violation.guidance ?? '')
-    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
-    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
-    .trim();
-
-  if (guidance) {
-    return guidance;
-  }
-
-  if (violation.ruleId === 'button-name') {
-    return 'Add visible button text, aria-label, aria-labelledby, or another valid accessible-name source.';
-  }
-
-  if (violation.ruleId === 'link-name') {
-    return 'Give the link meaningful visible text, aria-label, or aria-labelledby text that describes its destination or action.';
-  }
-
-  if (violation.ruleId === 'color-contrast') {
-    return 'Increase the contrast between foreground and background colors until the text meets the required WCAG contrast ratio.';
-  }
-
-  if (violation.ruleId === 'image-alt') {
-    return 'Add an alt attribute that describes the image purpose, or use alt="" only when the image is decorative.';
-  }
-
-  if (violation.ruleId === 'target-size') {
-    return 'Increase the clickable area or spacing so the target meets the required minimum size.';
-  }
-
-  return 'Review the failed rule, inspect this exact element, and update the markup, ARIA, text, focus behavior, or styling required by the rule.';
-}
-
-function normalizeOverlayText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-function formatViolationEngines(engines: readonly KodeGlassViolation['engine'][]): string {
-  return [...new Set(engines)].join(', ');
-}
-
-function getAccessibleName(element: Element): string {
-  return computeAccessibleName(element).replace(/\s+/g, ' ').trim().slice(0, 120);
-}
-
-function getAccessibleDescription(element: Element): string {
-  return computeAccessibleDescription(element).replace(/\s+/g, ' ').trim();
-}
-
-function getAccessibleRole(element: Element): string {
-  const computedRole = getRole(element);
-
-  if (computedRole) {
-    return computedRole;
-  }
-
-  const tagName = element.tagName.toLowerCase();
-
-  return ({
-    a: element.hasAttribute('href') ? 'link' : 'generic',
-    article: 'article',
-    aside: 'complementary',
-    button: 'button',
-    footer: 'contentinfo',
-    form: 'form',
-    h1: 'heading',
-    h2: 'heading',
-    h3: 'heading',
-    h4: 'heading',
-    h5: 'heading',
-    h6: 'heading',
-    header: 'banner',
-    img: 'img',
-    input: getInputRole(element),
-    main: 'main',
-    nav: 'navigation',
-    select: 'combobox',
-    textarea: 'textbox',
-  } as Record<string, string>)[tagName] ?? 'generic';
-}
-
-function getInputRole(element: Element): string {
-  const type = element.getAttribute('type') ?? 'text';
-
-  return ({
-    button: 'button',
-    checkbox: 'checkbox',
-    radio: 'radio',
-    range: 'slider',
-    search: 'searchbox',
-    submit: 'button',
-  } as Record<string, string>)[type] ?? 'textbox';
-}
-
-function getAccessibleState(element: Element): readonly string[] {
-  return [
-    ...getAttributeStates(element),
-    ...getNativeStates(element),
-    ...getStructuralStates(element),
-  ];
-}
-
-function getAttributeStates(element: Element): readonly string[] {
-  const states: string[] = [];
-  const expanded = element.getAttribute('aria-expanded');
-  const pressed = element.getAttribute('aria-pressed');
-  const selected = element.getAttribute('aria-selected');
-  const checked = element.getAttribute('aria-checked');
-  const current = element.getAttribute('aria-current');
-  const invalid = element.getAttribute('aria-invalid');
-
-  if (expanded === 'true') {
-    states.push('Expanded');
-  } else if (expanded === 'false') {
-    states.push('Collapsed');
-  }
-
-  if (pressed === 'true') {
-    states.push('Pressed');
-  } else if (pressed === 'mixed') {
-    states.push('Partially pressed');
-  }
-
-  if (selected === 'true') {
-    states.push('Selected');
-  }
-
-  if (checked === 'true') {
-    states.push('Checked');
-  } else if (checked === 'false') {
-    states.push('Unchecked');
-  } else if (checked === 'mixed') {
-    states.push('Partially checked');
-  }
-
-  if (current && current !== 'false') {
-    states.push(current === 'true' ? 'Current' : `Current ${current}`);
-  }
-
-  if (invalid === 'true') {
-    states.push('Invalid');
-  }
-
-  return states;
-}
-
-function getNativeStates(element: Element): readonly string[] {
-  const states: string[] = [];
-
-  if (element.hasAttribute('disabled')) {
-    states.push('disabled');
-  }
-
-  if (element.hasAttribute('required') || element.getAttribute('aria-required') === 'true') {
-    states.push('required');
-  }
-
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-    const value = element instanceof HTMLSelectElement ? element.selectedOptions[0]?.textContent?.trim() : element.value;
-
-    if (value) {
-      states.push(`value: ${value}`);
-    }
-  }
-
-  if (element instanceof HTMLAnchorElement && element.href) {
-    states.push(`destination: ${element.href}`);
-  }
-
-  return states;
-}
-
-function getStructuralStates(element: Element): readonly string[] {
-  const tagName = element.tagName.toLowerCase();
-  const level = /^h[1-6]$/.test(tagName) ? tagName.slice(1) : element.getAttribute('aria-level');
-
-  return level ? [`level: ${level}`] : [];
-}
-
-function isUrlLike(value: string): boolean {
-  return /^https?:\/\//i.test(value);
-}
-
-function getElementBySelector(selector: string): Element | null {
-  if (!selector || selector === 'document') {
-    return null;
-  }
-
-  try {
-    return document.querySelector(selector);
-  } catch {
-    return null;
-  }
-}
-
-function getActiveModalElement(): HTMLElement | null {
-  const candidates = Array.from(document.querySelectorAll<HTMLElement>('[aria-modal="true"]'))
-    .filter(element => !element.closest('kode-glass-overlay') && isElementVisibleForOverlay(element));
-
-  return candidates.at(-1) ?? null;
-}
-
-function isElementVisibleForOverlay(element: Element): boolean {
-  if (element.closest('kode-glass-overlay')) {
-    return false;
-  }
-
-  const bounds = getElementBounds(element);
-
-  if (!bounds) {
-    return false;
-  }
-
-  let current: Element | null = element;
-
-  while (current && current !== document.documentElement) {
-    if (current instanceof HTMLElement) {
-      if (current.hidden || current.inert) {
-        return false;
-      }
-
-      const styles = getComputedStyle(current);
-
-      if (styles.display === 'none' || styles.visibility === 'hidden' || Number(styles.opacity) === 0) {
-        return false;
-      }
-    }
-
-    current = current.parentElement;
-  }
-
-  return true;
 }

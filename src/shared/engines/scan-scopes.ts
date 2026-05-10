@@ -10,10 +10,31 @@ const overlayRootSelectors = [
   '.cdk-global-overlay-wrapper',
   '.cdk-overlay-popover',
   '.cdk-overlay-pane',
+  '.cdk-overlay-connected-position-bounding-box',
+  '.mat-mdc-dialog-container',
+  '.mat-mdc-menu-panel',
+  '.mat-mdc-select-panel',
+  '#headlessui-portal-root',
+  '[data-radix-portal]',
   '[popover].cdk-overlay-popover',
 ] as const;
 
+const semanticOverlayRootSelectors = [
+  'dialog[open]',
+  '[role="dialog"]',
+  '[role="alertdialog"]',
+  '[aria-modal="true"]',
+  '[role="menu"]',
+  '[role="listbox"]',
+  '[role="tooltip"]',
+  '[popover]:not([hidden])',
+] as const;
+
 const overlayContentSelectors = [
+  'tui-root',
+  'tui-dialog',
+  'tui-dialog-host',
+  'tui-dropdown-host',
   'ui-dialog',
   'ui-dropdown',
   'ui-drawer',
@@ -35,6 +56,16 @@ function collectOverlayScanScopes(rootDocument: Document): readonly Accessibilit
   const overlays = new Map<Element, AccessibilityScanScope>();
 
   for (const selector of overlayRootSelectors) {
+    rootDocument.querySelectorAll(selector).forEach(element => {
+      if (!shouldScanOverlayRoot(element)) {
+        return;
+      }
+
+      overlays.set(element, createElementScope(element, 'overlay'));
+    });
+  }
+
+  for (const selector of semanticOverlayRootSelectors) {
     rootDocument.querySelectorAll(selector).forEach(element => {
       if (!shouldScanOverlayRoot(element)) {
         return;

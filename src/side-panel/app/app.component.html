@@ -9,16 +9,34 @@
       <div class="header-actions">
         <button
           class="settings-toggle"
+          [class.is-active]="panelView() === 'settings'"
           appearance="secondary"
           size="s"
           tuiButton
           type="button"
           [attr.aria-label]="settingsToggleLabel()"
+          [attr.aria-pressed]="panelView() === 'settings'"
           [title]="settingsToggleLabel()"
           (click)="toggleSettingsView()"
         >
           <tui-icon icon="@tui.settings" />
         </button>
+        @if (state.jiraConnected()) {
+          <button
+            class="jira-toggle"
+            [class.is-active]="panelView() === 'jira'"
+            appearance="secondary"
+            size="s"
+            tuiButton
+            type="button"
+            [attr.aria-label]="jiraToggleLabel()"
+            [attr.aria-pressed]="panelView() === 'jira'"
+            [title]="jiraToggleLabel()"
+            (click)="toggleJiraView()"
+          >
+            <img class="jira-logo" src="icons/jira-logo.svg" alt="" aria-hidden="true" />
+          </button>
+        }
         <button
           class="theme-toggle"
           appearance="secondary"
@@ -59,33 +77,155 @@
           </div>
         </div>
 
-        @if (state.jiraConnected()) {
-          <div class="filter-group">
-            <span class="eyebrow">Issue target</span>
-            <select [ngModel]="state.jiraProjectKey()" (ngModelChange)="setJiraProjectKey($event)">
-              <option value="">Select project</option>
-              @for (project of state.jiraProjects(); track project.id) {
-                <option [value]="project.key">{{ project.key }} - {{ project.name }}</option>
-              }
-            </select>
-            <select [ngModel]="state.jiraIssueTypeId()" (ngModelChange)="setJiraIssueTypeId($event)">
-              <option value="">Select issue type</option>
-              @for (issueType of state.jiraIssueTypes(); track issueType.id) {
-                <option [value]="issueType.id">{{ issueType.name }}</option>
-              }
-            </select>
-            <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.jiraPending()" (click)="createJiraTask()">
-              Create Jira Task
-            </button>
-          </div>
-        }
-
-        @if (state.analysisError(); as analysisError) {
-          <section class="surface status-message status-message--error" role="alert">
-            <strong>Action issue</strong>
+        @if (visibleAnalysisError(); as analysisError) {
+          <section class="surface status-message status-message--info" role="status" aria-live="polite">
+            <strong>Action info</strong>
             <span>{{ analysisError }}</span>
+            <div class="status-message-actions">
+              <button appearance="secondary" size="s" tuiButton type="button" (click)="dismissAnalysisError()">
+                Dismiss
+              </button>
+            </div>
           </section>
         }
+      </section>
+    } @else if (panelView() === 'jira') {
+      <section class="surface settings-panel" aria-label="Jira settings">
+        <div class="settings-header">
+          <h2>Jira</h2>
+          <span class="settings-subtitle">Project, issue type and task creation</span>
+        </div>
+
+        <div class="filter-group">
+          <span class="eyebrow">Project</span>
+          <select [ngModel]="state.jiraProjectKey()" (ngModelChange)="setJiraProjectKey($event)">
+            <option value="">Select project</option>
+            @for (project of state.jiraProjects(); track project.id) {
+              <option [value]="project.key">{{ project.key }} - {{ project.name }}</option>
+            }
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <span class="eyebrow">Issue type</span>
+          <select [ngModel]="state.jiraIssueTypeId()" (ngModelChange)="setJiraIssueTypeId($event)">
+            <option value="">Select issue type</option>
+            @for (issueType of state.jiraIssueTypes(); track issueType.id) {
+              <option [value]="issueType.id">{{ issueType.name }}{{ issueType.isSubtask ? ' (Subtask)' : '' }}</option>
+            }
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <span class="eyebrow">Parent and linking</span>
+          <label class="jira-preview-field">
+            <span>Parent issue key (for subtask/story)</span>
+            <input
+              type="text"
+              placeholder="PROJ-123"
+              [ngModel]="jiraParentIssueKey()"
+              (ngModelChange)="jiraParentIssueKey.set($event ?? '')"
+            />
+          </label>
+          <label class="jira-preview-field">
+            <span>Link to issue key (optional)</span>
+            <input
+              type="text"
+              placeholder="PROJ-456"
+              [ngModel]="jiraLinkIssueKey()"
+              (ngModelChange)="jiraLinkIssueKey.set($event ?? '')"
+            />
+          </label>
+          <label class="jira-preview-field">
+            <span>Link type</span>
+            <select [ngModel]="jiraLinkTypeName()" (ngModelChange)="jiraLinkTypeName.set($event ?? 'Relates')">
+              @for (linkType of jiraLinkTypes; track linkType) {
+                <option [value]="linkType">{{ linkType }}</option>
+              }
+            </select>
+          </label>
+        </div>
+
+        <div class="filter-group">
+          <span class="eyebrow">Include in Jira task</span>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludePageMetadata()" (ngModelChange)="jiraIncludePageMetadata.set($event)" />
+            <span>Page metadata (title, URL, timestamp)</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeAppliedFilters()" (ngModelChange)="jiraIncludeAppliedFilters.set($event)" />
+            <span>Applied filters</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeFilteredFindings()" (ngModelChange)="jiraIncludeFilteredFindings.set($event)" />
+            <span>Filtered findings list</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeFocusedViolation()" (ngModelChange)="jiraIncludeFocusedViolation.set($event)" />
+            <span>Focused violation details</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeStructureSnapshot()" (ngModelChange)="jiraIncludeStructureSnapshot.set($event)" />
+            <span>Structure snapshot (headings + landmarks)</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeEvidenceImage()" (ngModelChange)="jiraIncludeEvidenceImage.set($event)" />
+            <span>Attach evidence image</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeRollbackVideoGuidance()" (ngModelChange)="jiraIncludeRollbackVideoGuidance.set($event)" />
+            <span>Include rollback video guidance</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludePdfReportGuidance()" (ngModelChange)="jiraIncludePdfReportGuidance.set($event)" />
+            <span>Include PDF report guidance</span>
+          </label>
+          <label class="jira-option-row jira-checkbox-row">
+            <input type="checkbox" [ngModel]="jiraIncludeReportMarkdown()" (ngModelChange)="jiraIncludeReportMarkdown.set($event)" />
+            <span>Include report markdown snapshot</span>
+          </label>
+          <label class="jira-max-findings">
+            <span class="eyebrow">Max findings in body</span>
+            <input type="number" min="1" max="100" [ngModel]="jiraMaxFindings()" (ngModelChange)="setJiraMaxFindings($event)" />
+          </label>
+        </div>
+
+        <div class="filter-group jira-preview-group">
+          <div class="jira-preview-header">
+            <span class="eyebrow">Task preview</span>
+            <button appearance="secondary" size="s" tuiButton type="button" [disabled]="jiraPreviewPending()" (click)="refreshJiraPreviewAssets()">Refresh preview</button>
+          </div>
+          <div class="jira-preview-card">
+            <span class="jira-preview-title">Summary</span>
+            <p>{{ jiraIssueDraft().summary }}</p>
+          </div>
+          <div class="jira-preview-card">
+            <span class="jira-preview-title">Description</span>
+            <pre>{{ jiraIssueDraft().description }}</pre>
+          </div>
+          <div class="jira-preview-assets">
+            <div class="jira-preview-asset">
+              <span class="jira-preview-title">Evidence image</span>
+              @if (jiraPreviewImageUrl(); as imagePreviewUrl) {
+                <img [src]="imagePreviewUrl" alt="Jira evidence preview image" />
+              } @else {
+                <p>Image preview unavailable for current selection.</p>
+              }
+            </div>
+            <div class="jira-preview-asset">
+              <span class="jira-preview-title">Rollback video</span>
+              @if (jiraPreviewVideoUrl(); as videoPreviewUrl) {
+                <video controls preload="metadata" [src]="videoPreviewUrl"></video>
+              } @else {
+                <p>Video preview unavailable. Enable video buffering and include rollback guidance.</p>
+              }
+            </div>
+          </div>
+        </div>
+
+        <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.jiraPending() || !jiraIssueDraft().canCreate" (click)="createJiraTask()">
+          Create Jira Task
+        </button>
       </section>
     } @else {
     <section class="surface page-summary" aria-label="Current page">
@@ -119,10 +259,6 @@
             <span class="metric">
               <strong>{{ state.totalLandmarks() }}</strong>
               <span tuiBadge size="s" appearance="positive">Landmarks</span>
-            </span>
-            <span class="metric">
-              <strong>{{ state.totalOverlayScopes() }}</strong>
-              <span tuiBadge size="s" appearance="info">Overlays</span>
             </span>
           </div>
         </tui-loader>
@@ -241,9 +377,118 @@
                     <span>Speed {{ state.readerMode().rate ?? 0.92 }}</span>
                     <input tuiSlider type="range" min="0.5" max="1" step="0.01" [style.--tui-thumb-size.px]="16" [segments]="1" [value]="state.readerMode().rate ?? 0.92" (input)="setReaderRate($event)">
                   </label>
+
+                  <div class="settings-disclosure settings-disclosure--advanced">
+                    <div class="disclosure-content">
+                      <div class="engine-setting-row">
+                        <div class="engine-setting-copy">
+                          <strong>Advanced narrator engine</strong>
+                          <span>Enables enhanced keyboard navigation and speech behavior.</span>
+                        </div>
+                        <input
+                          tuiSwitch
+                          type="checkbox"
+                          size="s"
+                          [attr.aria-label]="'Enable advanced narrator engine'"
+                          [ngModel]="state.readerMode().narratorEngineEnabled"
+                          (ngModelChange)="setNarratorEngineEnabled($event)"
+                        />
+                      </div>
+
+                      @if (state.readerMode().narratorEngineEnabled) {
+                        <div class="advanced-controls-grid">
+                        <div class="filter-group">
+                          <span class="eyebrow">Shortcut capture</span>
+                          <div class="engine-filter-row compact-group" tuiAppearance="secondary" tuiButtonGroup aria-label="Narrator keyboard mode">
+                            @for (mode of narratorKeyboardModes; track mode.id) {
+                              <button
+                                type="button"
+                                [class.active]="state.readerMode().keyboardMode === mode.id"
+                                [attr.aria-pressed]="state.readerMode().keyboardMode === mode.id"
+                                (click)="setNarratorKeyboardMode(mode.id)"
+                              >
+                                {{ mode.label }}
+                              </button>
+                            }
+                          </div>
+                        </div>
+
+                        <div class="filter-group">
+                          <span class="eyebrow">Command profile</span>
+                          <div class="engine-filter-row compact-group" tuiAppearance="secondary" tuiButtonGroup aria-label="Narrator command profile">
+                            @for (profile of narratorCommandProfiles; track profile.id) {
+                              <button
+                                type="button"
+                                [class.active]="state.readerMode().commandProfile === profile.id"
+                                [attr.aria-pressed]="state.readerMode().commandProfile === profile.id"
+                                (click)="setNarratorCommandProfile(profile.id)"
+                              >
+                                {{ profile.label }}
+                              </button>
+                            }
+                          </div>
+                        </div>
+
+                        <div class="filter-group">
+                          <span class="eyebrow">Verbosity</span>
+                          <div class="engine-filter-row compact-group" tuiAppearance="secondary" tuiButtonGroup aria-label="Narrator verbosity">
+                            @for (verbosity of narratorVerbosityProfiles; track verbosity.id) {
+                              <button
+                                type="button"
+                                [class.active]="state.readerMode().verbosity === verbosity.id"
+                                [attr.aria-pressed]="state.readerMode().verbosity === verbosity.id"
+                                (click)="setNarratorVerbosity(verbosity.id)"
+                              >
+                                {{ verbosity.label }}
+                              </button>
+                            }
+                          </div>
+                        </div>
+
+                        <div class="filter-group">
+                          <span class="eyebrow">Speech policy</span>
+                          <div class="engine-filter-row compact-group" tuiAppearance="secondary" tuiButtonGroup aria-label="Narrator speech policy">
+                            @for (policy of narratorInterruptPolicies; track policy.id) {
+                              <button
+                                type="button"
+                                [class.active]="state.readerMode().interruptPolicy === policy.id"
+                                [attr.aria-pressed]="state.readerMode().interruptPolicy === policy.id"
+                                (click)="setNarratorInterruptPolicy(policy.id)"
+                              >
+                                {{ policy.label }}
+                              </button>
+                            }
+                          </div>
+                        </div>
+                      </div>
+                      }
+                    </div>
+                  </div>
                 </div>
               }
             </div>
+
+            <details class="settings-disclosure">
+              <summary>
+                <span>Narrator shortcuts</span>
+              </summary>
+              <div class="disclosure-content">
+                <span class="eyebrow">Shortcut cheat sheet</span>
+                <p class="report-note">Shortcuts are captured when the web page is focused and Reader mode is on.</p>
+                <div class="narrator-shortcuts-grid" role="list" aria-label="Narrator keyboard shortcuts">
+                  @for (shortcut of narratorShortcutCheatSheet(); track shortcut.action + shortcut.keys.join(',')) {
+                    <div class="narrator-shortcut-item" role="listitem">
+                      <span class="narrator-shortcut-action">{{ shortcut.action }}</span>
+                      <div class="narrator-shortcut-keys">
+                        @for (key of shortcut.keys; track key) {
+                          <kbd>{{ key }}</kbd>
+                        }
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            </details>
           }
 
           @if (previewMode() === 'inspect') {
@@ -257,65 +502,99 @@
           }
         </div>
 
-        <div class="tool-group" aria-label="Evidence capture">
-          <div class="filter-group">
-            <span class="eyebrow">Evidence</span>
-            <div class="engine-filter-row" tuiAppearance="secondary" tuiButtonGroup aria-label="Image capture mode">
-              @for (mode of evidenceCaptureModes; track mode.id) {
-                <button
-                  type="button"
-                  [class.active]="evidenceCaptureMode() === mode.id"
-                  [attr.aria-pressed]="evidenceCaptureMode() === mode.id"
-                  (click)="setEvidenceCaptureMode(mode.id)"
-                >
-                  {{ mode.label }}
-                </button>
-              }
-            </div>
-          </div>
+      }
+    </section>
 
+    @if (state.pageReport()) {
+      <section class="surface actions utility-section" aria-label="Capture and export tools">
+        <div class="section-heading">
+          <span class="eyebrow">Capture & export</span>
+          <span class="report-note">Image, rollback video and report actions</span>
+        </div>
+
+        <div class="tool-group utility-actions" aria-label="Evidence and exports">
           <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.evidenceCapturePending()" (click)="captureEvidenceImage()">
             Capture image
           </button>
 
-          @if (state.videoBufferEnabled()) {
-            <div class="filter-group">
-              <span class="eyebrow">Window</span>
-              <div class="engine-filter-row" tuiAppearance="secondary" tuiButtonGroup aria-label="Rollback duration">
-                @for (minutes of rollbackMinuteOptions; track minutes) {
-                  <button
-                    type="button"
-                    [class.active]="rollbackMinutes() === minutes"
-                    [attr.aria-pressed]="rollbackMinutes() === minutes"
-                    (click)="setRollbackMinutes(minutes)"
-                  >
-                    {{ minutes }}m
-                  </button>
-                }
+          <details class="settings-disclosure">
+            <summary>
+              <span>Capture options</span>
+            </summary>
+            <div class="disclosure-content">
+              <div class="filter-group">
+                <span class="eyebrow">Capture mode</span>
+                <div class="engine-filter-row compact-group" tuiAppearance="secondary" tuiButtonGroup aria-label="Image capture mode">
+                  @for (mode of evidenceCaptureModes; track mode.id) {
+                    <button
+                      type="button"
+                      [class.active]="evidenceCaptureMode() === mode.id"
+                      [attr.aria-pressed]="evidenceCaptureMode() === mode.id"
+                      (click)="setEvidenceCaptureMode(mode.id)"
+                    >
+                      {{ mode.label }}
+                    </button>
+                  }
+                </div>
               </div>
             </div>
+          </details>
 
-            <button appearance="secondary" size="s" tuiButton type="button" (click)="downloadRollbackVideo()">
-              Download rollback
-            </button>
+          @if (state.videoBufferEnabled()) {
+            <details class="settings-disclosure">
+              <summary>
+                <span>Window rollback video</span>
+              </summary>
+              <div class="disclosure-content">
+                <div class="filter-group">
+                  <span class="eyebrow">Window length</span>
+                  <div class="engine-filter-row compact-group" tuiAppearance="secondary" tuiButtonGroup aria-label="Rollback duration">
+                    @for (minutes of rollbackMinuteOptions; track minutes) {
+                      <button
+                        type="button"
+                        [class.active]="rollbackMinutes() === minutes"
+                        [attr.aria-pressed]="rollbackMinutes() === minutes"
+                        (click)="setRollbackMinutes(minutes)"
+                      >
+                        {{ minutes }}m
+                      </button>
+                    }
+                  </div>
+                </div>
+
+                <button appearance="secondary" size="s" tuiButton type="button" (click)="downloadRollbackVideo()">
+                  Download rollback video
+                </button>
+              </div>
+            </details>
           }
-        </div>
 
-        <div class="tool-group" aria-label="Report export">
-          <div class="filter-group">
-            <span class="eyebrow">Report export</span>
-            <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.pdfExportPending()" (click)="exportPdfReport()">
-              Export PDF
-            </button>
-          </div>
+          <details class="settings-disclosure" aria-label="Report export">
+            <summary>
+              <span>Report export</span>
+            </summary>
+            <div class="disclosure-content">
+              <button appearance="secondary" size="s" tuiButton type="button" [disabled]="state.pdfExportPending()" (click)="exportPdfReport()">
+                Export PDF report
+              </button>
+            </div>
+          </details>
         </div>
-      }
-    </section>
+      </section>
+    }
 
-    @if (state.analysisError(); as analysisError) {
-      <section class="surface status-message status-message--error" role="alert">
-        <strong>Analysis issue</strong>
+    @if (visibleAnalysisError(); as analysisError) {
+      <section class="surface status-message status-message--info" role="status" aria-live="polite">
+        <strong>Analysis info</strong>
         <span>{{ analysisError }}</span>
+        <div class="status-message-actions">
+          <button appearance="secondary" size="s" tuiButton type="button" (click)="openSettingsView()">
+            Open settings
+          </button>
+          <button appearance="secondary" size="s" tuiButton type="button" (click)="dismissAnalysisError()">
+            Dismiss
+          </button>
+        </div>
       </section>
     }
 
@@ -544,170 +823,6 @@
             </div>
           } @else {
             <p class="empty-state">No structure data yet</p>
-          }
-        }
-
-        @case ('coverage') {
-          @if (state.coverage().length) {
-            <div class="coverage-page">
-              <section class="coverage-hero" aria-label="WCAG coverage summary">
-                <div class="coverage-hero-copy">
-                  <span class="eyebrow">WCAG 2.2 {{ state.auditSettings().standard === 'wcag2a' ? 'A' : 'AA' }}</span>
-                  <h2>Audit coverage</h2>
-                  <p>{{ state.coverageCompletionPercent() }}% has automated evidence. Manual checks keep the audit honest.</p>
-                </div>
-
-                <div class="coverage-orbit" aria-hidden="true">
-                  <strong>{{ state.coverageCompletionPercent() }}%</strong>
-                  <span>mapped</span>
-                </div>
-              </section>
-
-              <section class="coverage-progress" aria-label="Coverage status distribution">
-                <div class="coverage-progress-bar">
-                  <span class="coverage-progress-segment coverage-progress-segment--failed" [style.flex-grow]="state.coverageStatusCounts().failed"></span>
-                  <span class="coverage-progress-segment coverage-progress-segment--passed" [style.flex-grow]="state.coverageStatusCounts()['passed-automated']"></span>
-                  <span class="coverage-progress-segment coverage-progress-segment--manual" [style.flex-grow]="state.coverageStatusCounts()['needs-manual-review']"></span>
-                  <span class="coverage-progress-segment coverage-progress-segment--untested" [style.flex-grow]="state.coverageStatusCounts()['not-tested']"></span>
-                </div>
-
-                <div class="coverage-status-grid">
-                  <span class="coverage-status-card coverage-status-card--failed">
-                    <strong>{{ state.coverageStatusCounts().failed }}</strong>
-                    <span>Failed criteria</span>
-                  </span>
-                  <span class="coverage-status-card coverage-status-card--passed">
-                    <strong>{{ state.coverageStatusCounts()['passed-automated'] }}</strong>
-                    <span>Automated pass</span>
-                  </span>
-                  <span class="coverage-status-card coverage-status-card--manual">
-                    <strong>{{ state.coverageStatusCounts()['needs-manual-review'] }}</strong>
-                    <span>Manual review</span>
-                  </span>
-                  <span class="coverage-status-card coverage-status-card--untested">
-                    <strong>{{ state.coverageStatusCounts()['not-tested'] }}</strong>
-                    <span>Not tested</span>
-                  </span>
-                </div>
-              </section>
-
-              <section class="coverage-section" aria-label="Coverage by WCAG principle">
-                <div class="coverage-section-header">
-                  <h2>Principles</h2>
-                  <span>{{ state.coverage().length }} criteria in scope</span>
-                </div>
-
-                <div class="principle-grid">
-                  @for (principle of state.coveragePrinciples(); track principle.principle) {
-                    <article class="principle-card">
-                      <div>
-                        <strong>{{ principle.principle }}</strong>
-                        <span>{{ principle.total }} criteria</span>
-                      </div>
-                      <div class="principle-track" aria-hidden="true">
-                        <span class="principle-fill principle-fill--failed" [style.flex-grow]="principle.failed"></span>
-                        <span class="principle-fill principle-fill--passed" [style.flex-grow]="principle.passed"></span>
-                        <span class="principle-fill principle-fill--manual" [style.flex-grow]="principle.manual"></span>
-                      </div>
-                    </article>
-                  }
-                </div>
-              </section>
-
-              <section class="coverage-section" aria-label="Failed WCAG criteria">
-                <div class="coverage-section-header">
-                  <h2>Failed criteria</h2>
-                  <span>{{ state.failedCoverage().length }} mapped</span>
-                </div>
-
-                @if (state.failedCoverage().length) {
-                  <ul class="coverage-list coverage-list--failed">
-                    @for (item of state.failedCoverage(); track item.criterionId) {
-                      <li>
-                        <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
-                          <strong>{{ item.criterionId }} {{ item.level }}</strong>
-                          <div>
-                            <span>{{ item.title }}</span>
-                            <small>{{ item.violationIds.length }} {{ item.violationIds.length === 1 ? 'finding' : 'findings' }} · {{ item.relatedRuleIds.join(', ') || 'mapped rule' }}</small>
-                          </div>
-                        </button>
-                      </li>
-                    }
-                  </ul>
-                } @else {
-                  <p class="report-note">No mapped WCAG criteria are currently failing automated checks.</p>
-                }
-              </section>
-
-              <section class="coverage-section" aria-label="Manual review queue">
-                <div class="coverage-section-header">
-                  <h2>Manual review queue</h2>
-                  <span>{{ state.manualReviewCoverage().length }} remaining</span>
-                </div>
-
-                <ul class="coverage-list coverage-list--manual">
-                  @for (item of state.manualReviewCoverage(); track item.criterionId) {
-                    <li>
-                      <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
-                        <strong>{{ item.criterionId }} {{ item.level }}</strong>
-                        <div>
-                          <span>{{ item.title }}</span>
-                          <small>{{ item.principle }} · needs human judgment</small>
-                        </div>
-                      </button>
-                    </li>
-                  }
-                </ul>
-              </section>
-
-              <section class="coverage-section" aria-label="Automated pass coverage">
-                <div class="coverage-section-header">
-                  <h2>Automated pass</h2>
-                  <span>{{ state.passedAutomatedCoverage().length }} checked</span>
-                </div>
-
-                <ul class="coverage-list coverage-list--passed">
-                  @for (item of state.passedAutomatedCoverage(); track item.criterionId) {
-                    <li>
-                      <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
-                        <strong>{{ item.criterionId }} {{ item.level }}</strong>
-                        <div>
-                          <span>{{ item.title }}</span>
-                          <small>{{ item.principle }} · automated checks found no mapped failures</small>
-                        </div>
-                      </button>
-                    </li>
-                  }
-                </ul>
-              </section>
-
-              <section class="coverage-section" aria-label="Not tested coverage">
-                <div class="coverage-section-header">
-                  <h2>Not tested</h2>
-                  <span>{{ state.notTestedCoverage().length }} criteria</span>
-                </div>
-
-                @if (state.notTestedCoverage().length) {
-                  <ul class="coverage-list coverage-list--untested">
-                    @for (item of state.notTestedCoverage(); track item.criterionId) {
-                      <li>
-                        <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
-                          <strong>{{ item.criterionId }} {{ item.level }}</strong>
-                          <div>
-                            <span>{{ item.title }}</span>
-                            <small>{{ item.principle }} · no automated source completed for this criterion</small>
-                          </div>
-                        </button>
-                      </li>
-                    }
-                  </ul>
-                } @else {
-                  <p class="report-note">Every automated criterion has either evidence or a mapped finding for this source.</p>
-                }
-              </section>
-            </div>
-          } @else {
-            <p class="empty-state">No WCAG coverage data for this audit scope</p>
           }
         }
 
