@@ -1,21 +1,22 @@
 {
   "manifest_version": 3,
   "name": "Kode Glass",
+  "short_name": "Kode Glass",
   "description": "Visual accessibility diagnostics for QA teams.",
-  "version": "0.1.0",
+  "version": "2.0.1",
   "icons": {
-    "16": "icons/logo.png",
-    "32": "icons/logo.png",
-    "48": "icons/logo.png",
-    "128": "icons/logo.png"
+    "16": "icons/logo-128.png",
+    "32": "icons/logo-128.png",
+    "48": "icons/logo-128.png",
+    "128": "icons/logo-128.png"
   },
   "action": {
-    "default_title": "glass",
+    "default_title": "Kode Glass",
     "default_icon": {
-      "16": "icons/logo.png",
-      "32": "icons/logo.png",
-      "48": "icons/logo.png",
-      "128": "icons/logo.png"
+      "16": "icons/logo-128.png",
+      "32": "icons/logo-128.png",
+      "48": "icons/logo-128.png",
+      "128": "icons/logo-128.png"
     }
   },
   "background": {

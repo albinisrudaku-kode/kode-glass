@@ -4,7 +4,7 @@ import type {
   ElementBounds,
   KodeGlassViolation,
 } from '../shared/accessibility-report';
-import {normalizeViolationGuidance} from '../shared/violation-text';
+import {getReadableViolationGuidance, getReadableViolationSummary} from '../shared/text/violation-copy';
 import {isUrlLike} from './overlay-geometry';
 
 export interface ViolationRenderTarget {
@@ -45,36 +45,11 @@ export function formatCoverageCriteriaLabel(criteria: readonly string[]): string
 }
 
 export function getViolationSummary(violation: KodeGlassViolation): string {
-  const summary = normalizeViolationGuidance(violation.title ?? violation.summary);
-
-  if (violation.ruleId === 'button-name') {
-    return 'Button has no accessible name';
-  }
-
-  if (violation.ruleId === 'link-name') {
-    return 'Link has no accessible name';
-  }
-
-  if (violation.ruleId === 'color-contrast') {
-    return 'Text contrast is too low';
-  }
-
-  if (violation.ruleId === 'image-alt') {
-    return 'Image is missing alternate text';
-  }
-
-  if (violation.ruleId === 'target-size') {
-    return 'Tap target is too small';
-  }
-
-  return summary || violation.ruleId;
+  return getReadableViolationSummary(violation);
 }
 
 export function getViolationFixText(violation: KodeGlassViolation): string {
-  const guidance = normalizeOverlayText(violation.guidance ?? '')
-    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
-    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
-    .trim();
+  const guidance = getReadableViolationGuidance(normalizeOverlayText(violation.guidance ?? ''));
 
   if (guidance) {
     return guidance;

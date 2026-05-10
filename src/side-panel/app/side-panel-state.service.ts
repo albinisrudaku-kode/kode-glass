@@ -587,6 +587,7 @@ export class SidePanelStateService {
         return;
       }
 
+      await this.flushVideoRollbackRecorder();
       const cutoff = Date.now() - minutes * 60_000;
       const chunks = this.videoRollbackChunks.filter(chunk => chunk.recordedAt >= cutoff).map(chunk => chunk.blob);
 
@@ -705,7 +706,9 @@ export class SidePanelStateService {
     const imageDataUrl = options.includeEvidenceImage
       ? await this.captureEvidenceImageData('full-screen', {silent: true, throttled: true})
       : null;
-    const rollbackVideoBlob = options.includeRollbackVideoGuidance ? this.createRollbackVideoBlob(options.rollbackWindowMinutes) : null;
+    const rollbackVideoBlob = options.includeRollbackVideoGuidance
+      ? await this.createRollbackVideoBlob(options.rollbackWindowMinutes)
+      : null;
 
     return {
       imageDataUrl,
@@ -1239,11 +1242,12 @@ ${findings || 'No findings in current filter scope.'}` : 'Findings list excluded
     this.videoRollbackChunks.splice(0, firstIndexInWindow);
   }
 
-  private createRollbackVideoBlob(minutes: number): Blob | null {
+  private async createRollbackVideoBlob(minutes: number): Promise<Blob | null> {
     if (!this.videoBufferEnabled()) {
       return null;
     }
 
+    await this.flushVideoRollbackRecorder();
     const cutoff = Date.now() - minutes * 60_000;
     const chunks = this.videoRollbackChunks.filter(chunk => chunk.recordedAt >= cutoff).map(chunk => chunk.blob);
 
@@ -1253,6 +1257,17 @@ ${findings || 'No findings in current filter scope.'}` : 'Findings list excluded
 
     const mimeType = this.videoRollbackRecorder?.mimeType || 'video/webm';
     return new Blob(chunks, {type: mimeType});
+  }
+
+  private async flushVideoRollbackRecorder(): Promise<void> {
+    const recorder = this.videoRollbackRecorder;
+
+    if (!recorder || recorder.state !== 'recording') {
+      return;
+    }
+
+    recorder.requestData();
+    await wait(120);
   }
 
   private handleRuntimeDeliveryFailure(message: RuntimeMessage, error: unknown): void {

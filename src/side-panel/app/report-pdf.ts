@@ -1,7 +1,6 @@
 import {jsPDF} from 'jspdf';
 import {
   type BuildReportPdfInput,
-  type PdfEvidenceImage,
   PdfLayout,
   addPageNumbers,
   drawAppendixIntro,

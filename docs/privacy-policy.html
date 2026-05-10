@@ -21,7 +21,7 @@
   <main>
     <header>
       <h1>Kode Glass — Privacy Policy</h1>
-      <p class="meta"><strong>Effective date:</strong> May 5, 2026 · <strong>Document version:</strong> 1.0</p>
+      <p class="meta"><strong>Effective date:</strong> May 10, 2026 · <strong>Document version:</strong> 1.1</p>
     </header>
 
     <section id="controller">
@@ -37,37 +37,37 @@
 
     <section id="data">
       <h2>3. Information the Extension processes</h2>
-      <p>The Extension helps you run accessibility-related diagnostics and overlays on web pages you actively use with the Extension. Depending on how you use it, it may process:</p>
+      <p>The Extension helps you run accessibility diagnostics and overlays on pages where you intentionally use Kode Glass. Depending on your actions, the Extension may process:</p>
       <ul>
-        <li><strong>Web page information</strong> needed for accessibility analysis—for example the page URL, page title, and document structure and content visible to the checker (such as elements, roles, labels, headings, landmarks, and detected issues).</li>
-        <li><strong>Extension UI preferences</strong> stored locally in your browser (for example theme selection for the side panel via <code>localStorage</code>).</li>
-        <li><strong>Evidence artifacts</strong> (screenshots, rollback video clips, and PDF exports) that you explicitly generate. These files are created locally and saved through Chrome’s download flow.</li>
-        <li><strong>Jira OAuth session data</strong> (for example Atlassian access token metadata, refresh token, selected site, and selected project defaults) stored in <code>chrome.storage.local</code> so you can stay connected until you disconnect.</li>
+        <li><strong>Page analysis data</strong> such as page URL, title, and accessibility-relevant DOM metadata (for example element roles, labels, headings, landmarks, and detected violations).</li>
+        <li><strong>User settings</strong> stored locally (for example side panel preferences and reader mode options).</li>
+        <li><strong>User-generated evidence files</strong> (screenshots, rollback video clips, and PDF exports) only when you explicitly trigger export/download features.</li>
+        <li><strong>Jira connection/session data</strong> (for example Atlassian OAuth access token, refresh token, selected Jira site, and selected project/issue defaults) when you choose to connect Jira.</li>
       </ul>
-      <p>The Extension requests these Chrome permissions: <code>activeTab</code>, <code>downloads</code>, <code>identity</code>, <code>sidePanel</code>, <code>scripting</code>, <code>storage</code>, <code>tabCapture</code>, <code>tabs</code>, and <code>tts</code> (text-to-speech when you enable narration). It also requests host access for <code>https://auth.atlassian.com/*</code> and <code>https://api.atlassian.com/*</code> to perform Jira OAuth and issue creation when you choose to connect Jira.</p>
+      <p>The Extension requests these Chrome permissions: <code>activeTab</code>, <code>downloads</code>, <code>identity</code>, <code>sidePanel</code>, <code>scripting</code>, <code>storage</code>, <code>tabCapture</code>, <code>tabs</code>, and <code>tts</code>. Host permissions are limited to <code>https://auth.atlassian.com/*</code> and <code>https://api.atlassian.com/*</code> for Jira OAuth and Jira API actions you initiate.</p>
     </section>
 
     <section id="use">
       <h2>4. How we use information</h2>
-      <p>We use the information above solely to provide Extension functionality you request: displaying diagnostics in the side panel, highlighting elements on the page, generating reports in the UI, exporting optional evidence artifacts, creating Jira tasks when you explicitly trigger it, and optional narration. We do not use it for advertising profiling inside the Extension.</p>
+      <p>We use this information only to deliver requested features: run accessibility diagnostics, render overlays and reports, export evidence files, create Jira tasks you submit, and provide optional text-to-speech narration. We do not sell personal data and do not use extension data for advertising purposes.</p>
     </section>
 
     <section id="sharing">
       <h2>5. Transmission and third parties</h2>
-      <p><strong>No developer-hosted analytics:</strong> Based on the design of this Extension, scan results and page-derived diagnostics are processed inside Chrome and exchanged between the Extension’s own components (for example the side panel, background service worker, and content scripts). We do not transmit those scan contents to servers we operate for collection or analytics.</p>
+      <p><strong>No developer-hosted analytics pipeline:</strong> Scan results and page-derived diagnostics are processed in extension contexts (side panel, background service worker, and content scripts). We do not send those diagnostics to our own analytics servers.</p>
       <p><strong>Platform and embedded services:</strong></p>
       <ul>
         <li><strong>Chrome APIs:</strong> Chrome processes Extension messaging and permissions according to Google’s practices.</li>
-        <li><strong>Atlassian Jira:</strong> If you connect Jira, OAuth and Jira API requests are sent to Atlassian endpoints to authenticate your account, discover available Jira resources, and create issues/attachments that you submit from the Extension.</li>
+        <li><strong>Atlassian Jira:</strong> If you connect Jira, OAuth and Jira API requests are sent to Atlassian to authenticate your account, list projects/issue types, and create issues/attachments that you explicitly submit.</li>
         <li><strong>Text-to-speech:</strong> When you enable narration, the Extension uses Chrome’s <code>chrome.tts</code> API. Your device and Chrome handle synthesis and audio output.</li>
-        <li><strong>Fonts:</strong> The side panel UI may request fonts from <strong>Google Fonts</strong> when the panel loads; that request is governed by Google’s terms and your network environment.</li>
+        <li><strong>Fonts:</strong> The side panel may request font resources from Google Fonts while loading the UI.</li>
         <li><strong>Documentation links:</strong> If you open external help or documentation links from scan results (for example IBM Accessibility guidance URLs shown as references), those sites apply their own privacy policies.</li>
       </ul>
     </section>
 
     <section id="retention">
       <h2>6. Retention</h2>
-      <p>Analysis results shown in the Extension exist for your session as you use the Extension until you reset state, reload, or close the UI as applicable. Local preference storage and Jira OAuth session data remain until you disconnect Jira, clear extension data, or uninstall the Extension. Exported evidence files remain wherever you save them.</p>
+      <p>Ephemeral analysis results remain in active extension state while you use the extension. Stored settings and Jira session tokens remain in extension local storage until you disconnect Jira, clear extension site data, or uninstall the extension. Exported files remain where you save them until you delete them.</p>
     </section>
 
     <section id="security">
@@ -77,8 +77,8 @@
 
     <section id="rights">
       <h2>8. Your choices and rights</h2>
-      <p>You choose when to open the side panel and run analysis. You may clear locally stored Extension UI data through Chrome’s settings for the Extension, or uninstall the Extension to remove it and its stored side-panel data.</p>
-      <p>If applicable privacy laws give you rights (such as access or deletion) with respect to personal data we process, contact us at the privacy email above. Much of what the Extension processes exists only locally on your device and is not stored by us as a cloud database tied to your identity as part of the Extension’s core operation described here.</p>
+      <p>You choose when to open the side panel, scan a page, connect Jira, record rollback video, or export evidence. You can disconnect Jira at any time, clear extension storage in Chrome, and uninstall the extension.</p>
+      <p>Where applicable law grants privacy rights (for example access, correction, deletion, or objection), contact us at the email above. Because core processing happens locally in your browser, many data artifacts can be controlled directly on your device.</p>
     </section>
 
     <section id="children">
@@ -88,7 +88,7 @@
 
     <section id="changes">
       <h2>10. Changes to this policy</h2>
-      <p>We may update this policy when the Extension’s features or legal requirements change. We will revise the effective date and document version when we do. Continued use after the effective date constitutes acceptance of the updated policy.</p>
+      <p>We may update this policy when features, legal requirements, or Chrome Web Store requirements change. We will revise the effective date and version when we do.</p>
     </section>
 
     <footer class="meta">

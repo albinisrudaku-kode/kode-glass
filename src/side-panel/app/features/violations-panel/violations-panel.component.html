@@ -1,0 +1,145 @@
+@if (hasViolations()) {
+  @if (selectedViolation(); as selectedViolationValue) {
+    <section class="focus-filter" aria-label="Filtered violation">
+      <div>
+        <strong class="eyebrow">Violation focus</strong>
+        <span title="{{ selectedViolationValue.selector }}">{{ selectedViolationValue.selector }}</span>
+      </div>
+
+      <button type="button" tuiButton size="s" appearance="outline" (click)="clearSelectedViolationRequested.emit()">Show all</button>
+    </section>
+  }
+
+  @if (selectedComponentScope(); as selectedComponentScopeValue) {
+    <section class="focus-filter" aria-label="Filtered component scope">
+      <div>
+        <strong class="eyebrow">Component scope</strong>
+        <span title="{{ selectedComponentScopeValue.selector }}">{{ selectedComponentScopeValue.label }}</span>
+      </div>
+
+      <button type="button" tuiButton size="s" appearance="outline" (click)="clearSelectedComponentScopeRequested.emit()">Show all</button>
+    </section>
+  }
+
+  <section class="violation-filters" aria-label="Violation filters" data-violations-anchor>
+    <div class="filter-group">
+      <span class="eyebrow">Component</span>
+      <tui-textfield tuiChevron tuiTextfieldSize="s" [tuiTextfieldCleaner]="false">
+        <input
+          placeholder="All components"
+          tuiComboBox
+          [ngModel]="selectedComponentScopeLabel()"
+          (ngModelChange)="componentScopeLabelChange.emit($event)"
+        />
+        <tui-data-list-wrapper *tuiDropdown size="s" [items]="componentScopeOptions() | tuiFilterByInput" />
+      </tui-textfield>
+    </div>
+
+    <div class="filter-group">
+      <span class="eyebrow">Severity</span>
+      <div class="severity-row" aria-label="Issue severity filters">
+        @for (severity of severityFilters(); track severity.id) {
+          <button
+            class="severity severity-filter"
+            type="button"
+            [class.critical]="severity.id === 'critical'"
+            [class.warning]="severity.id === 'warning'"
+            [class.info]="severity.id === 'info'"
+            [class.inactive]="!severityVisibility()[severity.id]"
+            [attr.aria-pressed]="severityVisibility()[severity.id]"
+            (click)="severityFilterToggle.emit(severity.id)"
+          >
+            <strong>{{ availableSeverityCounts()[severity.id] }}</strong>
+            {{ severity.label }}
+          </button>
+        }
+      </div>
+    </div>
+  </section>
+
+  @if (hasVisibleViolations()) {
+    <ul class="violation-groups">
+      @for (group of visibleViolationGroups(); track group.id) {
+        <li class="finding-card" [class.finding-card--expanded]="isViolationGroupExpanded(group.id)">
+          <button
+            class="finding-header-button"
+            type="button"
+            [attr.aria-controls]="'violation-panel-' + group.id"
+            [attr.aria-expanded]="isViolationGroupExpanded(group.id)"
+            (click)="violationGroupHeaderClick.emit(group)"
+          >
+            <div class="finding-main">
+              <span
+                class="severity-dot"
+                [class.critical]="group.severity === 'critical'"
+                [class.warning]="group.severity === 'warning'"
+                [class.info]="group.severity === 'info'"
+                aria-hidden="true"
+              ></span>
+              <div class="finding-copy">
+                <strong class="finding-title">{{ group.title }}</strong>
+                <span class="finding-meta">{{ group.engineLabel }} · {{ group.ruleId }} · {{ group.count }} {{ group.count === 1 ? 'element' : 'elements' }}</span>
+              </div>
+            </div>
+
+            <tui-icon class="finding-toggle-icon" icon="@tui.chevron-down" aria-hidden="true" />
+          </button>
+
+          @if (isViolationGroupExpanded(group.id)) {
+            <div class="finding-content" [id]="'violation-panel-' + group.id">
+              <div class="finding-body">
+                @if (group.description) {
+                  <div class="finding-detail">
+                    <span class="finding-detail-label">What it checks</span>
+                    <p>{{ group.description }}</p>
+                  </div>
+                }
+
+                @if (group.fix) {
+                  <div class="finding-detail finding-detail--fix">
+                    <span class="finding-detail-label">Fix</span>
+                    <p>
+                      @for (segment of group.fix.segments; track $index) {
+                        @if (segment.kind === 'chip') {
+                          <span tuiChip appearance="outline-grayscale" size="xxs" class="fix-inline-chip">
+                            {{ segment.text }}
+                          </span>
+                        } @else {
+                          {{ segment.text }}
+                        }
+                      }
+                    </p>
+                  </div>
+                }
+
+                @if (group.helpUrl) {
+                  <div class="finding-actions">
+                    <a class="finding-link" tuiLink [href]="group.helpUrl" target="_blank" rel="noreferrer">Open rule guide</a>
+                  </div>
+                }
+              </div>
+
+              <tui-accordion class="selector-accordion" size="s" [closeOthers]="false">
+                <button [tuiAccordion]="isFocusedGroup()(group)">
+                  {{ group.selectors.length }} selector{{ group.selectors.length === 1 ? '' : 's' }}
+                </button>
+
+                <tui-expand>
+                  <ul class="selector-list">
+                    @for (selector of group.selectors; track selector) {
+                      <li>{{ selector }}</li>
+                    }
+                  </ul>
+                </tui-expand>
+              </tui-accordion>
+            </div>
+          }
+        </li>
+      }
+    </ul>
+  } @else {
+    <p class="empty-state">No findings match these filters</p>
+  }
+} @else {
+  <p class="empty-state">No findings yet</p>
+}

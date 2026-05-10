@@ -1,11 +1,9 @@
 import {ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal} from '@angular/core';
 import {FormsModule} from '@angular/forms';
 import {TuiAppearance, TuiButton, TuiFilterByInputPipe, TuiIcon, TuiLoader, TuiRoot, TuiSlider} from '@taiga-ui/core';
-import {TuiLink} from '@taiga-ui/core/components/link';
-import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiChip, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
+import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
 import type {
   AuditStandard,
-  ComponentScopeOption,
   EvidenceCaptureMode,
   LayerName,
   NarratorCommandProfile,
@@ -15,54 +13,33 @@ import type {
   ViolationEngineFilter,
   ViolationSeverity,
 } from '../../shared/accessibility-report';
+import {matchesViolationFilters} from '../../shared/violation-filters';
 import {
-  SidePanelStateService,
   type JiraIssueComposerOptions,
   type JiraIssueRelationOptions,
   type PreviewMode,
   type ViolationGroup,
 } from './side-panel-state.service';
-
-type PanelTab = 'violations' | 'structure' | 'report';
-type PanelView = 'jira' | 'main' | 'settings';
-type Theme = 'light' | 'dark';
-type LayerFilterItem = 'Errors' | 'Landmarks' | 'Focus';
-type RollbackMinutes = 1 | 3 | 5;
-
-interface PanelTabItem {
-  readonly id: PanelTab;
-  readonly label: string;
-}
-
-interface AuditStandardItem {
-  readonly id: AuditStandard;
-  readonly label: string;
-}
-
-interface SeverityFilterItem {
-  readonly id: ViolationSeverity;
-  readonly label: string;
-}
-
-interface ViolationEngineFilterItem {
-  readonly id: ViolationEngineFilter;
-  readonly label: string;
-}
-
-interface ComponentScopeSelectItem {
-  readonly label: string;
-  readonly scope: ComponentScopeOption;
-}
-
-interface NarratorModeOption<T extends string> {
-  readonly id: T;
-  readonly label: string;
-}
-
-interface NarratorShortcutItem {
-  readonly action: string;
-  readonly keys: readonly string[];
-}
+import {PanelFacadeService} from './state/panel-facade.service';
+import {SettingsJiraAccountComponent} from './features/settings-jira-account/settings-jira-account.component';
+import {JiraComposerComponent} from './features/jira-composer/jira-composer.component';
+import {ViolationsPanelComponent} from './features/violations-panel/violations-panel.component';
+import {
+  type AuditStandardItem,
+  type ComponentScopeSelectItem,
+  type LayerFilterItem,
+  type NarratorModeOption,
+  type NarratorShortcutItem,
+  type PanelTab,
+  type PanelTabItem,
+  type PanelView,
+  type RollbackMinutes,
+  type SeverityFilterItem,
+  type Theme,
+  type ViolationEngineFilterItem,
+} from './shared/panel-ui.types';
+import {getFormValue, getStoredTheme} from './shared/form.utils';
+import {formatComponentScopeLabel, isExcludedComponentTag} from './shared/component-scope.utils';
 
 @Component({
   selector: 'kode-glass-root',
@@ -74,17 +51,18 @@ interface NarratorShortcutItem {
     TuiButton,
     TuiButtonGroup,
     TuiChevron,
-    TuiChip,
     TuiComboBox,
     TuiDataListWrapper,
     TuiFilter,
     TuiFilterByInputPipe,
     TuiIcon,
-    TuiLink,
     TuiLoader,
     TuiRoot,
     TuiSlider,
     TuiSwitch,
+    SettingsJiraAccountComponent,
+    JiraComposerComponent,
+    ViolationsPanelComponent,
   ],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css',
@@ -96,7 +74,7 @@ export class AppComponent {
   private jiraPreviewVideoObjectUrl: string | null = null;
   private lastFocusedViolationId: string | null = null;
   private readonly dismissedAnalysisError = signal<string | null>(null);
-  protected readonly state = inject(SidePanelStateService);
+  protected readonly state = inject(PanelFacadeService);
   protected readonly activeTab = signal<PanelTab>('violations');
   protected readonly expandedViolationGroups = signal<ReadonlySet<string>>(new Set());
   protected readonly evidenceCaptureMode = signal<EvidenceCaptureMode>('full-screen');
@@ -188,7 +166,15 @@ export class AppComponent {
     return voiceURI ? this.state.voiceOptions().find(voice => voice.voiceURI === voiceURI)?.label ?? 'System default' : 'System default';
   });
   protected readonly componentScopeItems = computed<readonly ComponentScopeSelectItem[]>(() => {
-    const violationCountByTagName = this.state.violations().reduce((counts, violation) => {
+    const selectedViolation = this.state.selectedViolation();
+    const filteredViolations = this.state.violations().filter(violation => {
+      const matchesFocusedViolation = !selectedViolation
+        || violation.id === selectedViolation.violationId
+        || violation.selector === selectedViolation.selector;
+
+      return matchesFocusedViolation && matchesViolationFilters(violation, this.state.violationFilterSettings());
+    });
+    const violationCountByTagName = filteredViolations.reduce((counts, violation) => {
       const tagName = violation.componentScope?.tagName;
 
       if (!tagName) {
@@ -205,12 +191,13 @@ export class AppComponent {
       .filter(scope => !isExcludedComponentTag(scope.tagName))
       .map(scope => ({
         count: violationCountByTagName.get(scope.tagName) ?? 0,
+        displayLabel: formatComponentScopeLabel(scope.label),
         scope,
       }))
       .filter(item => item.count > 0 || item.scope.tagName === selectedScopeTagName)
-      .sort((first, second) => second.count - first.count || first.scope.label.localeCompare(second.scope.label))
+      .sort((first, second) => second.count - first.count || first.displayLabel.localeCompare(second.displayLabel))
       .map(item => ({
-        label: `${item.scope.label} (${item.count})`,
+        label: `${item.displayLabel} (${item.count})`,
         scope: item.scope,
       }));
   });
@@ -223,8 +210,7 @@ export class AppComponent {
     }
 
     const matchedItem = this.componentScopeItems().find(item => item.scope.tagName === selectedScope.tagName);
-
-    return matchedItem?.label ?? `${selectedScope.label} (0)`;
+    return matchedItem?.label ?? `${formatComponentScopeLabel(selectedScope.label)} (0)`;
   });
   protected readonly tabs: readonly PanelTabItem[] = [
     {id: 'violations', label: 'Violations'},
@@ -444,7 +430,10 @@ export class AppComponent {
       return;
     }
 
-    const componentScope = this.componentScopeItems().find(item => item.label === label)?.scope;
+    const normalizedLabel = normalizeComponentScopeInput(label);
+    const componentScope = this.componentScopeItems().find(item => (
+      normalizeComponentScopeInput(item.label) === normalizedLabel
+    ))?.scope;
 
     if (!componentScope) {
       this.state.clearSelectedComponentScope();
@@ -498,6 +487,14 @@ export class AppComponent {
 
     this.selectViolationGroup(group);
   }
+
+  protected readonly jiraConnectionStatus = computed(() => (
+    this.state.jiraConnected()
+      ? 'Connected'
+      : this.state.jiraSession().status === 'connecting'
+        ? 'Connecting'
+        : 'Disconnected'
+  ));
 
   protected selectViolationGroup(group: ViolationGroup): void {
     const violationId = group.violationIds[0];
@@ -774,20 +771,11 @@ export class AppComponent {
   }
 }
 
-function isExcludedComponentTag(tagName: string): boolean {
-  const normalizedTagName = tagName.toLowerCase();
-
-  return normalizedTagName === 'router-outlet'
-    || normalizedTagName.startsWith('kode-glass-')
-    || normalizedTagName.startsWith('tui-')
-    || normalizedTagName.startsWith('cdk-')
-    || normalizedTagName.startsWith('ng-');
-}
-
-function getFormValue(event: Event): string {
-  return event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement ? event.target.value : '';
-}
-
-function getStoredTheme(): Theme {
-  return localStorage.getItem('kode-glass-theme') === 'dark' ? 'dark' : 'light';
+function normalizeComponentScopeInput(value: string): string {
+  return value
+    .replace(/\(\d+\)\s*$/g, '')
+    .replace(/[<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }

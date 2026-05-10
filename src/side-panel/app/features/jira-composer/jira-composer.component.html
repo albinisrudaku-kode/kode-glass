@@ -1,0 +1,127 @@
+<section class="surface settings-panel" aria-label="Jira settings">
+  <div class="settings-header">
+    <h2>Jira</h2>
+    <span class="settings-subtitle">Project, issue type and task creation</span>
+  </div>
+
+  <div class="filter-group">
+    <span class="eyebrow">Project</span>
+    <select [ngModel]="jiraProjectKey()" (ngModelChange)="jiraProjectKeyChange.emit($event ?? '')">
+      <option value="">Select project</option>
+      @for (project of jiraProjects(); track project.id) {
+        <option [value]="project.key">{{ project.key }} - {{ project.name }}</option>
+      }
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <span class="eyebrow">Issue type</span>
+    <select [ngModel]="jiraIssueTypeId()" (ngModelChange)="jiraIssueTypeIdChange.emit($event ?? '')">
+      <option value="">Select issue type</option>
+      @for (issueType of jiraIssueTypes(); track issueType.id) {
+        <option [value]="issueType.id">{{ issueType.name }}{{ issueType.isSubtask ? ' (Subtask)' : '' }}</option>
+      }
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <span class="eyebrow">Parent and linking</span>
+    <label class="jira-preview-field">
+      <span>Parent issue key (for subtask/story)</span>
+      <input type="text" placeholder="PROJ-123" [ngModel]="jiraParentIssueKey()" (ngModelChange)="jiraParentIssueKeyChange.emit($event ?? '')" />
+    </label>
+    <label class="jira-preview-field">
+      <span>Link to issue key (optional)</span>
+      <input type="text" placeholder="PROJ-456" [ngModel]="jiraLinkIssueKey()" (ngModelChange)="jiraLinkIssueKeyChange.emit($event ?? '')" />
+    </label>
+    <label class="jira-preview-field">
+      <span>Link type</span>
+      <select [ngModel]="jiraLinkTypeName()" (ngModelChange)="jiraLinkTypeNameChange.emit($event ?? 'Relates')">
+        @for (linkType of jiraLinkTypes(); track linkType) {
+          <option [value]="linkType">{{ linkType }}</option>
+        }
+      </select>
+    </label>
+  </div>
+
+  <div class="filter-group">
+    <span class="eyebrow">Include in Jira task</span>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludePageMetadata()" (ngModelChange)="jiraIncludePageMetadataChange.emit($event)" />
+      <span>Page metadata (title, URL, timestamp)</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeAppliedFilters()" (ngModelChange)="jiraIncludeAppliedFiltersChange.emit($event)" />
+      <span>Applied filters</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeFilteredFindings()" (ngModelChange)="jiraIncludeFilteredFindingsChange.emit($event)" />
+      <span>Filtered findings list</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeFocusedViolation()" (ngModelChange)="jiraIncludeFocusedViolationChange.emit($event)" />
+      <span>Focused violation details</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeStructureSnapshot()" (ngModelChange)="jiraIncludeStructureSnapshotChange.emit($event)" />
+      <span>Structure snapshot (headings + landmarks)</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeEvidenceImage()" (ngModelChange)="jiraIncludeEvidenceImageChange.emit($event)" />
+      <span>Attach evidence image</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeRollbackVideoGuidance()" (ngModelChange)="jiraIncludeRollbackVideoGuidanceChange.emit($event)" />
+      <span>Include rollback video guidance</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludePdfReportGuidance()" (ngModelChange)="jiraIncludePdfReportGuidanceChange.emit($event)" />
+      <span>Include PDF report guidance</span>
+    </label>
+    <label class="jira-option-row jira-checkbox-row">
+      <input type="checkbox" [ngModel]="jiraIncludeReportMarkdown()" (ngModelChange)="jiraIncludeReportMarkdownChange.emit($event)" />
+      <span>Include report markdown snapshot</span>
+    </label>
+    <label class="jira-max-findings">
+      <span class="eyebrow">Max findings in body</span>
+      <input type="number" min="1" max="100" [ngModel]="jiraMaxFindings()" (ngModelChange)="jiraMaxFindingsChange.emit($event)" />
+    </label>
+  </div>
+
+  <div class="filter-group jira-preview-group">
+    <div class="jira-preview-header">
+      <span class="eyebrow">Task preview</span>
+      <button appearance="secondary" size="s" tuiButton type="button" [disabled]="jiraPreviewPending()" (click)="refreshPreviewRequested.emit()">Refresh preview</button>
+    </div>
+    <div class="jira-preview-card">
+      <span class="jira-preview-title">Summary</span>
+      <p>{{ jiraIssueDraft().summary }}</p>
+    </div>
+    <div class="jira-preview-card">
+      <span class="jira-preview-title">Description</span>
+      <pre>{{ jiraIssueDraft().description }}</pre>
+    </div>
+    <div class="jira-preview-assets">
+      <div class="jira-preview-asset">
+        <span class="jira-preview-title">Evidence image</span>
+        @if (jiraPreviewImageUrl(); as imagePreviewUrl) {
+          <img [src]="imagePreviewUrl" alt="Jira evidence preview image" />
+        } @else {
+          <p>Image preview unavailable for current selection.</p>
+        }
+      </div>
+      <div class="jira-preview-asset">
+        <span class="jira-preview-title">Rollback video</span>
+        @if (jiraPreviewVideoUrl(); as videoPreviewUrl) {
+          <video controls preload="metadata" [src]="videoPreviewUrl"></video>
+        } @else {
+          <p>Video preview unavailable. Enable video buffering and include rollback guidance.</p>
+        }
+      </div>
+    </div>
+  </div>
+
+  <button appearance="secondary" size="s" tuiButton type="button" [disabled]="jiraPending() || !jiraIssueDraft().canCreate" (click)="createTaskRequested.emit()">
+    Create Jira Task
+  </button>
+</section>

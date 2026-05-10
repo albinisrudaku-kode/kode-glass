@@ -1,0 +1,169 @@
+:host {
+  display: contents;
+}
+
+h2,
+p {
+  margin: 0;
+}
+
+.surface {
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 12px;
+  background: var(--tui-background-base);
+}
+
+.settings-panel {
+  display: grid;
+  gap: var(--kg-gap-md);
+  padding: var(--kg-gap-md);
+}
+
+.settings-header {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.settings-subtitle {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+}
+
+.eyebrow {
+  display: block;
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-xs-bold);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.filter-group {
+  display: grid;
+  gap: var(--kg-gap-xs);
+}
+
+.filter-group input,
+.filter-group select {
+  min-block-size: 2.25rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base);
+  color: var(--tui-text-primary);
+  padding: 0.5rem 0.625rem;
+}
+
+.jira-option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-inline-size: 0;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--tui-border-normal) 66%, transparent);
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s);
+}
+
+.jira-checkbox-row {
+  justify-content: flex-start;
+}
+
+.jira-checkbox-row input[type='checkbox'] {
+  accent-color: var(--tui-background-accent-1-pressed);
+}
+
+.jira-option-row:last-of-type {
+  border-bottom: 0;
+}
+
+.jira-max-findings {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+}
+
+.jira-max-findings input[type='number'] {
+  max-inline-size: 7rem;
+}
+
+.jira-preview-group {
+  gap: 0.5rem;
+}
+
+.jira-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.jira-preview-field {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.jira-preview-field > span {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-xs-bold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.jira-preview-card {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.625rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base-alt);
+}
+
+.jira-preview-title {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-xs-bold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.jira-preview-card p {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s);
+  line-height: 1.35;
+  margin: 0;
+}
+
+.jira-preview-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+  line-height: 1.35;
+}
+
+.jira-preview-assets {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.jira-preview-asset {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.625rem;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 0.625rem;
+  background: var(--tui-background-base-alt);
+}
+
+.jira-preview-asset p {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+  margin: 0;
+}
+
+.jira-preview-asset img,
+.jira-preview-asset video {
+  inline-size: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 74%, transparent);
+  background: var(--tui-background-base);
+}

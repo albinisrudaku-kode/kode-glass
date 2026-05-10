@@ -1,6 +1,6 @@
 import {jsPDF} from 'jspdf';
 import type {AccessibilityReport, KodeGlassViolation, ViolationFilterSettings, ViolationSeverity, WcagCoverageStatus} from '../../shared/accessibility-report';
-import {normalizeViolationGuidance} from '../../shared/violation-text';
+import {getReadableViolationGuidance, getReadableViolationSummary} from '../../shared/text/violation-copy';
 import {
   accent,
   border,
@@ -12,7 +12,6 @@ import {
   mutedInk,
   paper,
   softInk,
-  success,
   warning,
   white,
   coverageStatusColor,
@@ -916,33 +915,11 @@ function formatViolationEngine(engine: KodeGlassViolation['engine']): string {
 }
 
 function getReadableSummary(violation: KodeGlassViolation): string {
-  const summary = normalizeViolationGuidance(violation.title ?? violation.summary);
-
-  if (violation.ruleId === 'color-contrast') {
-    return 'Text contrast is too low';
-  }
-
-  if (violation.ruleId === 'image-alt') {
-    return 'Image is missing alternate text';
-  }
-
-  if (violation.ruleId === 'link-name') {
-    return 'Link has no accessible name';
-  }
-
-  if (violation.ruleId === 'target-size') {
-    return 'Tap target is too small';
-  }
-
-  return summary || violation.ruleId;
+  return getReadableViolationSummary(violation);
 }
 
 function getReadableGuidance(guidance: string): string {
-  return guidance
-    .replace(/\s+/g, ' ')
-    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
-    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
-    .trim();
+  return getReadableViolationGuidance(guidance);
 }
 
 function getPlanGuidance(group: FindingGroupSummary): string {

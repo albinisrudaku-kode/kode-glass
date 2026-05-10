@@ -19,6 +19,7 @@ import {
 } from '../shared/messages';
 import {captureEvidenceImage} from './screenshot-capture';
 import {toggleVideoBuffer, downloadRollbackVideo, stopVideoBuffer} from './video-recorder';
+import {isInternalMessage, isPortConnection} from '../shared/message-validator';
 import {
   getJiraAuthStatus,
   connectJira,
@@ -34,7 +35,6 @@ const latestReportsByTab = new Map<number, ReportGeneratedMessage>();
 const analyzerInjectedTabs = new Set<number>();
 export let activeTabId: number | undefined;
 const sidePanelPath = 'side-panel.html';
-const sidePanelPortName = 'kode-glass-side-panel';
 const extensionApi = globalThis.chrome;
 
 export function setupBackgroundListeners(): void {
@@ -64,6 +64,10 @@ export function setupBackgroundListeners(): void {
   });
 
   extensionApi.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
+  if (!isInternalMessage(sender)) {
+    return false;
+  }
+
   if (message.type === RuntimeMessageType.EvidenceImageCaptureRequested) {
     void captureEvidenceImage(message)
       .then(response => sendResponse(response))
@@ -245,7 +249,7 @@ export function setupBackgroundListeners(): void {
   });
 
   extensionApi.runtime.onConnect.addListener(port => {
-  if (port.name !== sidePanelPortName) {
+  if (!isPortConnection(port)) {
     return;
   }
 
@@ -643,5 +647,3 @@ export function rememberLatestTabMessage(tabId: number, message: RuntimeMessage)
 
   latestMessagesByTab.set(tabId, message);
 }
-
-setupBackgroundListeners();

@@ -1,0 +1,36 @@
+<section class="surface settings-panel" aria-label="Extension settings">
+  <div class="settings-header">
+    <h2>Settings</h2>
+    <span class="settings-subtitle">Jira integration and task setup</span>
+  </div>
+
+  <div class="filter-group">
+    <span class="eyebrow">Jira account</span>
+    <div class="jira-actions">
+      @if (!jiraConnected()) {
+        <button appearance="secondary" size="s" tuiButton type="button" [disabled]="jiraPending()" (click)="connectRequested.emit()">
+          Connect Jira
+        </button>
+      } @else {
+        <button appearance="secondary" size="s" tuiButton type="button" [disabled]="jiraPending()" (click)="disconnectRequested.emit()">
+          Disconnect Jira
+        </button>
+      }
+      <span class="jira-status" [class.connected]="jiraConnected()">
+        {{ jiraStatus() }}
+      </span>
+    </div>
+  </div>
+
+  @if (analysisError(); as errorMessage) {
+    <section class="surface status-message status-message--info" role="status" aria-live="polite">
+      <strong>Action info</strong>
+      <span>{{ errorMessage }}</span>
+      <div class="status-message-actions">
+        <button appearance="secondary" size="s" tuiButton type="button" (click)="dismissErrorRequested.emit()">
+          Dismiss
+        </button>
+      </div>
+    </section>
+  }
+</section>

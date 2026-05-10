@@ -1,4 +1,4 @@
-import {normalizeViolationGuidance} from '../../shared/violation-text';
+import {getReadableViolationGuidance, getReadableViolationSummary} from '../../shared/text/violation-copy';
 import type {
   AuditStandard,
   KodeGlassViolation,
@@ -170,33 +170,11 @@ export function formatCoverageStatus(status: WcagCoverageStatus): string {
 }
 
 export function getReadableSummary(violation: KodeGlassViolation): string {
-  const summary = normalizeViolationGuidance(violation.title ?? violation.summary);
-
-  if (violation.ruleId === 'color-contrast') {
-    return 'Text contrast is too low';
-  }
-
-  if (violation.ruleId === 'image-alt') {
-    return 'Image is missing alternate text';
-  }
-
-  if (violation.ruleId === 'link-name') {
-    return 'Link has no accessible name';
-  }
-
-  if (violation.ruleId === 'target-size') {
-    return 'Tap target is too small';
-  }
-
-  return summary;
+  return getReadableViolationSummary(violation);
 }
 
 export function getReadableGuidance(guidance: string): string {
-  return guidance
-    .replace(/\s+/g, ' ')
-    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
-    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
-    .trim();
+  return getReadableViolationGuidance(guidance);
 }
 
 export function createViolationFix(violation: KodeGlassViolation): ViolationFix | undefined {
