@@ -9,6 +9,8 @@ import type {
 import {analyzeWithAxe} from './axe-engine';
 import {collectHeadings, collectLandmarks} from './dom-summary';
 import {analyzeWithIbmEqualAccess} from './ibm-equal-access-engine';
+import {collectAccessibilityScanScopes, toScanScopeSummaries, type AccessibilityScanScope} from './scan-scopes';
+import {createWcagCoverage, enrichViolationsWithWcagCriteria} from '../wcag-coverage';
 
 interface EngineRunResult {
   readonly status: AccessibilityEngineStatus;
@@ -16,22 +18,26 @@ interface EngineRunResult {
 }
 
 export async function analyzeCurrentPage(auditSettings: AuditSettings): Promise<AccessibilityReport> {
+  const scanScopes = collectAccessibilityScanScopes();
   const [axeResult, ibmResult] = await Promise.all([
-    analyzeEngine('axe-core', 'Axe', () => analyzeWithAxe(auditSettings)),
+    analyzeEngine('axe-core', 'Axe', scanScopes, () => analyzeWithAxe(auditSettings, scanScopes)),
     shouldRunIbmEqualAccess(auditSettings)
-      ? analyzeEngine('ibm-equal-access', 'IBM Equal Access', () => analyzeWithIbmEqualAccess(auditSettings))
+      ? analyzeEngine('ibm-equal-access', 'IBM Equal Access', scanScopes, () => analyzeWithIbmEqualAccess(auditSettings, scanScopes))
       : Promise.resolve(createSkippedEngineResult('ibm-equal-access', 'IBM Equal Access', 'IBM Equal Access is not used for WCAG A-only scans.')),
   ]);
-  const violations = mergeDuplicateViolations([...axeResult.violations, ...ibmResult.violations]);
+  const violations = enrichViolationsWithWcagCriteria(mergeDuplicateViolations([...axeResult.violations, ...ibmResult.violations]));
+  const engineStatuses = [axeResult.status, ibmResult.status];
 
   return {
     auditSettings,
-    engineStatuses: [axeResult.status, ibmResult.status],
+    coverage: createWcagCoverage(auditSettings, violations, engineStatuses),
+    engineStatuses,
     generatedAt: Date.now(),
     headings: collectHeadings(),
     landmarks: collectLandmarks(),
     pageTitle: document.title || 'Untitled page',
     pageUrl: location.href,
+    scanScopes: toScanScopeSummaries(scanScopes),
     violations,
   };
 }
@@ -39,6 +45,7 @@ export async function analyzeCurrentPage(auditSettings: AuditSettings): Promise<
 async function analyzeEngine(
   engine: AccessibilityEngine,
   label: string,
+  scanScopes: readonly AccessibilityScanScope[],
   analyze: () => Promise<readonly KodeGlassViolation[]>,
 ): Promise<EngineRunResult> {
   const startedAt = performance.now();
@@ -51,6 +58,7 @@ async function analyzeEngine(
         durationMs: Math.round(performance.now() - startedAt),
         engine,
         label,
+        scopes: scanScopes.length,
         status: 'completed',
         violations: violations.length,
       },
@@ -65,6 +73,7 @@ async function analyzeEngine(
         engine,
         error: getErrorMessage(error),
         label,
+        scopes: scanScopes.length,
         status: 'failed',
         violations: 0,
       },

@@ -19,6 +19,8 @@ import type {
   ViolationEngineFilter,
   ViolationFilterSettings,
   ViolationSeverity,
+  WcagCoverageItem,
+  WcagCoverageStatus,
 } from '../../shared/accessibility-report';
 import {
   RuntimeMessageType,
@@ -34,6 +36,7 @@ import {
 } from '../../shared/messages';
 import {pickDefaultReaderVoice} from '../../shared/reader-voice';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../../shared/violation-filters';
+import {createWcagCoverage} from '../../shared/wcag-coverage';
 import {buildFilteredReportPdf, type PdfEvidenceImage} from './report-pdf';
 
 declare const __ATLASSIAN_OAUTH_CLIENT_ID__: string;
@@ -64,6 +67,14 @@ export interface ViolationFixSegment {
   readonly text: string;
 }
 
+export interface CoveragePrincipleSummary {
+  readonly failed: number;
+  readonly manual: number;
+  readonly passed: number;
+  readonly principle: WcagCoverageItem['principle'];
+  readonly total: number;
+}
+
 export interface ReaderVoiceOption {
   readonly label: string;
   readonly lang: string;
@@ -75,6 +86,7 @@ export interface ReaderVoiceOption {
 export type PreviewMode = 'off' | 'reader' | 'inspect';
 
 const initialLayerVisibility: LayerVisibility = {
+  coverage: false,
   errors: true,
   focusPath: false,
   landmarks: false,
@@ -175,9 +187,19 @@ export class SidePanelStateService {
   readonly jiraOauthConfigured = computed(() => Boolean(this.resolveConfiguredJiraClientId()));
   readonly availableSeverityCounts = computed(() => this.createSeverityCounts(this.createVisibleViolations({includeSeverityFilter: false})));
   readonly engineStatuses = computed(() => this.pageReport()?.engineStatuses ?? []);
+  readonly coverage = computed(() => this.createSourceFilteredCoverage());
+  readonly coverageStatusCounts = computed(() => this.createCoverageStatusCounts());
+  readonly coverageCompletionPercent = computed(() => this.createCoverageCompletionPercent());
+  readonly coveragePrinciples = computed(() => this.createCoveragePrincipleSummaries());
+  readonly failedCoverage = computed(() => this.coverage().filter(item => item.status === 'failed'));
+  readonly manualReviewCoverage = computed(() => this.coverage().filter(item => item.status === 'needs-manual-review'));
+  readonly notTestedCoverage = computed(() => this.coverage().filter(item => item.status === 'not-tested'));
+  readonly passedAutomatedCoverage = computed(() => this.coverage().filter(item => item.status === 'passed-automated'));
   readonly hasEngineWarnings = computed(() => this.engineStatuses().some(status => status.status !== 'completed'));
   readonly headings = computed(() => this.pageReport()?.headings ?? []);
   readonly landmarks = computed(() => this.pageReport()?.landmarks ?? []);
+  readonly scanScopes = computed(() => this.pageReport()?.scanScopes ?? []);
+  readonly overlayScanScopes = computed(() => this.scanScopes().filter(scope => scope.kind === 'overlay'));
   readonly visibleViolations = computed(() => this.createVisibleViolations());
   readonly hasViolations = computed(() => this.violations().length > 0);
   readonly hasVisibleViolations = computed(() => this.visibleViolations().length > 0);
@@ -186,6 +208,7 @@ export class SidePanelStateService {
   readonly severityCounts = computed(() => this.createSeverityCounts());
   readonly totalHeadings = computed(() => this.headings().length);
   readonly totalLandmarks = computed(() => this.landmarks().length);
+  readonly totalOverlayScopes = computed(() => this.overlayScanScopes().length);
   readonly totalViolations = computed(() => this.violations().length);
   readonly violationGroups = computed(() => this.createViolationGroups(this.visibleViolations()));
   readonly topViolationGroups = computed(() => this.violationGroups().slice(0, 6));
@@ -293,6 +316,7 @@ export class SidePanelStateService {
       ...filterSettings,
       engine: engineFilter,
     }));
+    this.clearSelectedViolationIfFilteredOut();
     this.sendViolationFiltersChanged();
   }
 
@@ -735,6 +759,14 @@ export class SidePanelStateService {
       ...this.layerVisibility(),
       [layerName]: !this.layerVisibility()[layerName],
     };
+
+    if (layerName === 'coverage' && nextLayerVisibility.coverage) {
+      nextLayerVisibility.errors = false;
+    }
+
+    if (layerName === 'errors' && nextLayerVisibility.errors) {
+      nextLayerVisibility.coverage = false;
+    }
 
     this.setLayerVisibility(nextLayerVisibility);
   }
@@ -1301,9 +1333,17 @@ ${findings || 'No findings in current filter scope.'}`;
 
     const headings = report.headings.map(heading => `- H${heading.level}: ${heading.text || heading.selector}`);
     const landmarks = report.landmarks.map(landmark => `- ${landmark.role}${landmark.label ? `: ${landmark.label}` : ''}`);
+    const scanScopes = report.scanScopes.map(scope => `- ${scope.label}: ${scope.elementCount} elements (${scope.selector})`);
+    const filteredCoverage = this.coverage();
+    const coverage = filteredCoverage.map(item => [
+      `- ${item.criterionId} ${item.title} (${item.level}): ${formatCoverageStatus(item.status)}`,
+      item.relatedRuleIds.length ? `  - Rules: ${item.relatedRuleIds.join(', ')}` : '',
+      item.violationIds.length ? `  - Findings: ${item.violationIds.length}` : '',
+    ].filter(Boolean).join('\n'));
     const engineStatuses = report.engineStatuses.map(status => [
       `- ${status.label}: ${status.status}`,
       `  - Violations: ${status.violations}`,
+      status.scopes ? `  - Scan scopes: ${status.scopes}` : '',
       `  - Duration: ${status.durationMs}ms`,
       status.error ? `  - Note: ${status.error}` : '',
     ].filter(Boolean).join('\n'));
@@ -1318,6 +1358,14 @@ ${findings || 'No findings in current filter scope.'}`;
       '## Engine Status',
       '',
       engineStatuses.join('\n') || 'No engine status available.',
+      '',
+      `## Scan Coverage (${report.scanScopes.length})`,
+      '',
+      scanScopes.join('\n') || 'No scan scope data available.',
+      '',
+      `## WCAG Coverage (${filteredCoverage.length})`,
+      '',
+      coverage.join('\n') || 'No WCAG coverage data available.',
       '',
       '## Applied Filters',
       '',
@@ -1345,6 +1393,73 @@ ${findings || 'No findings in current filter scope.'}`;
       ...counts,
       [violation.severity]: counts[violation.severity] + 1,
     }), {critical: 0, info: 0, warning: 0});
+  }
+
+  private createCoverageStatusCounts(): Record<WcagCoverageStatus, number> {
+    return this.coverage().reduce<Record<WcagCoverageStatus, number>>((counts, item) => ({
+      ...counts,
+      [item.status]: counts[item.status] + 1,
+    }), {'failed': 0, 'needs-manual-review': 0, 'not-tested': 0, 'passed-automated': 0});
+  }
+
+  private createCoverageCompletionPercent(): number {
+    const coverage = this.coverage();
+
+    if (!coverage.length) {
+      return 0;
+    }
+
+    const resolvedCount = coverage.filter(item => item.status === 'failed' || item.status === 'passed-automated').length;
+
+    return Math.round((resolvedCount / coverage.length) * 100);
+  }
+
+  private createCoveragePrincipleSummaries(): readonly CoveragePrincipleSummary[] {
+    const principles: readonly WcagCoverageItem['principle'][] = ['Perceivable', 'Operable', 'Understandable', 'Robust'];
+
+    return principles.map(principle => {
+      const items = this.coverage().filter(item => item.principle === principle);
+
+      return {
+        failed: items.filter(item => item.status === 'failed').length,
+        manual: items.filter(item => item.status === 'needs-manual-review').length,
+        passed: items.filter(item => item.status === 'passed-automated').length,
+        principle,
+        total: items.length,
+      };
+    }).filter(summary => summary.total > 0);
+  }
+
+  private createSourceFilteredCoverage(): readonly WcagCoverageItem[] {
+    const report = this.pageReport();
+
+    if (!report) {
+      return [];
+    }
+
+    return createWcagCoverage(
+      report.auditSettings,
+      this.createEngineFilteredViolations(),
+      this.createEngineFilteredStatuses(),
+    );
+  }
+
+  private createEngineFilteredViolations(): readonly KodeGlassViolation[] {
+    const filterSettings = this.violationFilterSettings();
+
+    return this.violations().filter(violation => matchesViolationFilters(violation, filterSettings, {includeSeverityFilter: false}));
+  }
+
+  private createEngineFilteredStatuses(): AccessibilityReport['engineStatuses'] {
+    const engineFilter = this.violationFilterSettings().engine;
+
+    if (engineFilter === 'both') {
+      return this.engineStatuses();
+    }
+
+    const engine = engineFilter === 'axe' ? 'axe-core' : 'ibm-equal-access';
+
+    return this.engineStatuses().filter(status => status.engine === engine);
   }
 
   private createViolationGroups(violations: readonly KodeGlassViolation[] = this.visibleViolations()): readonly ViolationGroup[] {
@@ -1394,6 +1509,22 @@ ${findings || 'No findings in current filter scope.'}`;
 
       return matchesSelectedViolation && matchesSelectedComponent && matchesFilters;
     });
+  }
+
+  private clearSelectedViolationIfFilteredOut(): void {
+    const selectedViolation = this.selectedViolation();
+
+    if (!selectedViolation) {
+      return;
+    }
+
+    const violation = this.violations().find(item => item.id === selectedViolation.violationId || item.selector === selectedViolation.selector);
+
+    if (!violation || matchesViolationFilters(violation, this.violationFilterSettings(), {includeSeverityFilter: false})) {
+      return;
+    }
+
+    this.setSelectedViolation(null);
   }
 }
 
@@ -1468,6 +1599,15 @@ function formatViolationEngine(engine: KodeGlassViolation['engine']): string {
     manual: 'Manual',
     playwright: 'Playwright',
   } as Record<KodeGlassViolation['engine'], string>)[engine];
+}
+
+function formatCoverageStatus(status: WcagCoverageStatus): string {
+  return ({
+    failed: 'Failed',
+    'needs-manual-review': 'Needs manual review',
+    'not-tested': 'Not tested',
+    'passed-automated': 'Passed automated checks',
+  } as Record<WcagCoverageStatus, string>)[status];
 }
 
 function getReadableSummary(violation: KodeGlassViolation): string {

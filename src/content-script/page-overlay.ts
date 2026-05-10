@@ -15,6 +15,7 @@ import type {
 import {RuntimeMessageType} from '../shared/messages';
 import {getElementBounds, getElementSelector} from '../shared/engines/dom-summary';
 import {initialViolationFilterSettings, matchesViolationFilters} from '../shared/violation-filters';
+import {createWcagCoverage} from '../shared/wcag-coverage';
 import type {ViolationSelectedPayload} from '../shared/messages';
 import {resolveComponentScopeForElement} from './component-scope';
 
@@ -34,6 +35,11 @@ interface OverlayBoxOptions {
   readonly selected?: boolean;
 }
 
+interface ViolationRenderTarget {
+  readonly bounds: ElementBounds;
+  readonly element: Element;
+}
+
 const severityColors: Record<KodeGlassViolation['severity'], string> = {
   critical: '#d9214f',
   info: '#207ff0',
@@ -47,6 +53,7 @@ const overlayFillColors: Record<KodeGlassViolation['severity'], string> = {
 };
 
 const initialLayerVisibility: LayerVisibility = {
+  coverage: false,
   errors: true,
   focusPath: false,
   landmarks: false,
@@ -216,6 +223,7 @@ export class PageOverlay {
     this.host.style.inset = '0';
     this.host.style.pointerEvents = 'none';
     this.host.style.zIndex = '2147483647';
+    this.host.setAttribute('popover', 'manual');
 
     const style = document.createElement('style');
     style.textContent = `
@@ -414,6 +422,54 @@ export class PageOverlay {
         animation: kg-popover-in 140ms cubic-bezier(0.16, 1, 0.3, 1);
       }
 
+      .active-node-label.violation-detail {
+        animation: kg-popover-in 140ms cubic-bezier(0.16, 1, 0.3, 1);
+        border-color: rgba(15, 23, 42, 0.16);
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.2), 0 2px 8px rgba(15, 23, 42, 0.08);
+        max-block-size: min(520px, calc(100vh - 32px));
+        max-inline-size: min(440px, calc(100vw - 24px));
+        min-inline-size: min(360px, calc(100vw - 24px));
+      }
+
+      .violation-panel__header {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        border-radius: 12px 12px 0 0;
+      }
+
+      .severity-label {
+        border-radius: 5px;
+        color: #ffffff;
+        margin-bottom: 8px;
+        max-inline-size: 100%;
+        overflow-wrap: anywhere;
+        padding: 4px 7px;
+      }
+
+      .severity-label--critical {
+        background: #d9214f;
+      }
+
+      .severity-label--warning {
+        background: #d88400;
+      }
+
+      .severity-label--info {
+        background: #207ff0;
+      }
+
+      .wcag-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .wcag-tag {
+        background: #eef2ff;
+        border-color: #c7d2fe;
+        color: #3730a3;
+      }
+
       @keyframes kg-popover-in {
         from {
           opacity: 0;
@@ -436,6 +492,7 @@ export class PageOverlay {
     });
     this.shadowRoot.append(style, this.svg, this.activeNodeLabel);
     document.documentElement.append(this.host);
+    this.bringOverlayToTopLayerFront();
   }
 
   private syncRuntimeSubscriptions(): void {
@@ -563,7 +620,10 @@ export class PageOverlay {
   }
 
   private needsClickSelection(): boolean {
-    return this.latestReport !== null && this.layerVisibility.pageOverlay && this.layerVisibility.errors && !this.readerMode.enabled;
+    return this.latestReport !== null
+      && this.layerVisibility.pageOverlay
+      && (this.layerVisibility.errors || this.layerVisibility.coverage)
+      && !this.readerMode.enabled;
   }
 
   private needsInspectTracking(): boolean {
@@ -573,7 +633,7 @@ export class PageOverlay {
   private shouldRenderFrame(): boolean {
     const hasOverlayLayers = this.latestReport !== null
       && this.layerVisibility.pageOverlay
-      && (this.layerVisibility.errors || this.layerVisibility.landmarks || this.layerVisibility.focusPath);
+      && (this.layerVisibility.coverage || this.layerVisibility.errors || this.layerVisibility.landmarks || this.layerVisibility.focusPath);
     const hasReaderHighlight = this.readerMode.enabled && this.latestSummary?.bounds !== undefined;
     const hasInspectHighlight = this.readerMode.inspectWithMouse && !this.readerMode.enabled && this.latestMouseSummary?.bounds !== undefined;
 
@@ -598,14 +658,23 @@ export class PageOverlay {
   };
 
   private render(): void {
+    this.bringOverlayToTopLayerFront();
     this.svg.replaceChildren();
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.landmarks) {
       this.latestReport.landmarks.forEach((landmark, index) => this.renderLandmark(landmark, index));
     }
 
-    if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.errors) {
-      const visibleViolations = this.getVisibleViolations();
+    if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.coverage) {
+      this.renderCoverageOverlay();
+    }
+
+    const shouldRenderViolationLayer = this.latestReport
+      && this.layerVisibility.pageOverlay
+      && (this.layerVisibility.errors || this.layerVisibility.coverage);
+
+    if (shouldRenderViolationLayer) {
+      const visibleViolations = this.layerVisibility.errors ? this.getRenderableViolations() : this.getCoverageRenderableViolations();
       const hasFocusedViolation = this.selectedViolationFocus
         && visibleViolations.some(violation => this.isSelectedViolation(violation));
 
@@ -613,7 +682,17 @@ export class PageOverlay {
         this.renderSelectionBackdrop();
       }
 
-      visibleViolations.forEach((violation, index) => this.renderViolation(violation, index));
+      if (this.layerVisibility.errors) {
+        visibleViolations.forEach((violation, index) => this.renderViolation(violation, index));
+      }
+
+      const selectedViolation = visibleViolations.find(violation => this.isSelectedViolation(violation));
+
+      if (selectedViolation && !this.readerMode.enabled) {
+        this.renderViolationDetail(selectedViolation);
+      } else if (!this.readerMode.enabled && !this.readerMode.inspectWithMouse) {
+        this.hideActiveNode();
+      }
     }
 
     if (this.latestReport && this.layerVisibility.pageOverlay && this.layerVisibility.focusPath) {
@@ -629,13 +708,34 @@ export class PageOverlay {
     }
   }
 
-  private renderViolation(violation: KodeGlassViolation, index: number): void {
-    const bounds = this.getCurrentViolationBounds(violation);
-
-    if (!bounds) {
+  private bringOverlayToTopLayerFront(): void {
+    if (!this.canUsePopoverTopLayer(this.host)) {
       return;
     }
 
+    try {
+      if (this.host.matches(':popover-open')) {
+        this.host.hidePopover();
+      }
+
+      this.host.showPopover();
+    } catch {
+      // The overlay still works as a fixed element in browsers without popover top-layer support.
+    }
+  }
+
+  private canUsePopoverTopLayer(element: HTMLElement): element is HTMLElement & {showPopover: () => void} {
+    return typeof (element as {readonly showPopover?: unknown}).showPopover === 'function';
+  }
+
+  private renderViolation(violation: KodeGlassViolation, index: number): void {
+    const target = this.getViolationRenderTarget(violation);
+
+    if (!target) {
+      return;
+    }
+
+    const bounds = target.bounds;
     const selected = this.isSelectedViolation(violation);
 
     if (selected) {
@@ -650,6 +750,105 @@ export class PageOverlay {
       dashArray: selected ? '4 3' : undefined,
       selected,
     });
+  }
+
+  private renderCoverageOverlay(): void {
+    const coverage = this.getSourceFilteredCoverage();
+
+    if (!coverage.length) {
+      return;
+    }
+
+    this.getCoverageRenderableViolations().forEach(violation => this.renderCoverageViolationMarker(violation));
+  }
+
+  private renderCoverageViolationMarker(violation: KodeGlassViolation): void {
+    const target = this.getViolationRenderTarget(violation);
+    const criteria = violation.wcagCriteria ?? [];
+
+    if (!target || !criteria.length) {
+      return;
+    }
+
+    this.renderBox({
+      bounds: target.bounds,
+      color: '#d9214f',
+      dashArray: '3 3',
+      fill: 'rgba(217, 33, 79, 0.05)',
+      label: formatCoverageCriteriaLabel(criteria),
+      selected: this.isSelectedViolation(violation),
+    });
+  }
+
+  private renderViolationDetail(violation: KodeGlassViolation): void {
+    const target = this.getViolationRenderTarget(violation);
+
+    if (!target) {
+      this.hideActiveNode();
+
+      return;
+    }
+
+    const summary = this.getActiveNodeSummary(target.element);
+    const shell = document.createElement('div');
+    shell.className = 'glass-panel violation-panel';
+
+    const header = document.createElement('div');
+    header.className = 'panel-header violation-panel__header';
+
+    const roleLabel = document.createElement('div');
+    roleLabel.className = `role-label severity-label severity-label--${violation.severity}`;
+    roleLabel.textContent = `${violation.severity} - ${violation.ruleId}`;
+
+    const title = document.createElement('div');
+    title.className = 'element-title';
+    title.textContent = getViolationSummary(violation);
+
+    header.append(roleLabel, title);
+
+    if (violation.wcagCriteria?.length) {
+      const criteria = document.createElement('div');
+      criteria.className = 'wcag-tags';
+      violation.wcagCriteria.forEach(criterion => {
+        const tag = document.createElement('span');
+        tag.className = 'state-tag wcag-tag';
+        tag.textContent = criterion;
+        criteria.append(tag);
+      });
+      header.append(criteria);
+    }
+
+    shell.append(header);
+
+    const body = document.createElement('div');
+    body.className = 'panel-body';
+    body.append(
+      this.createPreviewRow('Element', `${summary.role}${summary.name ? ` - ${summary.name}` : ' - unnamed'}`),
+      this.createPreviewRow('Selector', violation.selector),
+      this.createPreviewRow('Source', formatViolationEngines(violation.sourceEngines ?? [violation.engine])),
+    );
+
+    if (violation.description) {
+      body.append(this.createPreviewRow('What failed', normalizeOverlayText(violation.description)));
+    }
+
+    body.append(this.createPreviewRow('Fix', getViolationFixText(violation)));
+
+    if (summary.componentScope) {
+      body.append(this.createPreviewRow('Component', summary.componentScope.label));
+    }
+
+    if (violation.helpUrl) {
+      body.append(this.createPreviewRow('Rule guide', violation.helpUrl));
+    }
+
+    shell.append(body);
+
+    this.activeNodeLabel.replaceChildren(shell);
+    this.activeNodeLabel.classList.remove('reader-subtitle', 'inspect-popover');
+    this.activeNodeLabel.classList.add('violation-detail');
+    this.activeNodeLabel.style.display = 'block';
+    this.positionViolationDetail(target.bounds);
   }
 
   private renderLandmark(landmark: LandmarkSummary, index: number): void {
@@ -964,7 +1163,7 @@ export class PageOverlay {
     this.latestMouseSummary = summary;
     this.renderPreview(summary, false);
     this.activeNodeLabel.classList.add('inspect-popover');
-    this.activeNodeLabel.classList.remove('reader-subtitle');
+    this.activeNodeLabel.classList.remove('reader-subtitle', 'violation-detail');
     this.activeNodeLabel.style.display = 'block';
     this.positionInspectPopover(event);
     this.activeNodeChanged(summary);
@@ -975,6 +1174,7 @@ export class PageOverlay {
     this.activeNodeLabel.style.display = 'none';
     this.activeNodeLabel.classList.remove('inspect-popover');
     this.activeNodeLabel.classList.remove('reader-subtitle');
+    this.activeNodeLabel.classList.remove('violation-detail');
     this.activeNodeChanged(null);
   };
 
@@ -1005,7 +1205,7 @@ export class PageOverlay {
     const text = getSpokenSummary(summary);
 
     this.renderPreview(summary, true);
-    this.activeNodeLabel.classList.remove('inspect-popover');
+    this.activeNodeLabel.classList.remove('inspect-popover', 'violation-detail');
     this.activeNodeLabel.classList.add('reader-subtitle');
     this.activeNodeLabel.style.display = 'block';
     this.activeNodeLabel.style.left = '';
@@ -1019,7 +1219,7 @@ export class PageOverlay {
 
   private showReaderIdleSubtitle(): void {
     this.renderIdlePreview();
-    this.activeNodeLabel.classList.remove('inspect-popover');
+    this.activeNodeLabel.classList.remove('inspect-popover', 'violation-detail');
     this.activeNodeLabel.classList.add('reader-subtitle');
     this.activeNodeLabel.style.display = 'block';
     this.activeNodeLabel.style.left = '';
@@ -1149,16 +1349,40 @@ export class PageOverlay {
     this.activeNodeLabel.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - rect.height - padding))}px`;
   }
 
+  private positionViolationDetail(bounds: ElementBounds): void {
+    const padding = 12;
+    const gap = 14;
+    const rect = this.activeNodeLabel.getBoundingClientRect();
+    const viewportX = bounds.x - window.scrollX;
+    const viewportY = bounds.y - window.scrollY;
+    const rightSpace = window.innerWidth - (viewportX + bounds.width);
+    const leftSpace = viewportX;
+    const topSpace = viewportY;
+    const bottomSpace = window.innerHeight - (viewportY + bounds.height);
+
+    const left = rightSpace >= rect.width + gap + padding || rightSpace >= leftSpace
+      ? viewportX + bounds.width + gap
+      : viewportX - rect.width - gap;
+    const top = bottomSpace >= rect.height + gap + padding || bottomSpace >= topSpace
+      ? viewportY
+      : viewportY + bounds.height - rect.height;
+
+    this.activeNodeLabel.style.left = `${Math.max(padding, Math.min(left, window.innerWidth - rect.width - padding))}px`;
+    this.activeNodeLabel.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - rect.height - padding))}px`;
+  }
+
   private isOverlayEvent(event: Event): boolean {
     return event.composedPath().includes(this.host);
   }
 
   private getViolationAtPoint(x: number, y: number): KodeGlassViolation | null {
-    if (!this.latestReport || !this.layerVisibility.pageOverlay || !this.layerVisibility.errors) {
+    if (!this.latestReport || !this.layerVisibility.pageOverlay || (!this.layerVisibility.errors && !this.layerVisibility.coverage)) {
       return null;
     }
 
-    return this.getVisibleViolations().find(violation => {
+    const violations = this.layerVisibility.errors ? this.getRenderableViolations() : this.getCoverageRenderableViolations();
+
+    return violations.find(violation => {
       const bounds = this.getCurrentViolationBounds(violation);
 
       return Boolean(bounds && x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height);
@@ -1166,9 +1390,63 @@ export class PageOverlay {
   }
 
   private getCurrentViolationBounds(violation: KodeGlassViolation): ElementBounds | undefined {
+    return this.getViolationRenderTarget(violation)?.bounds;
+  }
+
+  private getViolationRenderTarget(violation: KodeGlassViolation): ViolationRenderTarget | null {
     const element = getElementBySelector(violation.selector);
 
-    return element ? getElementBounds(element) : violation.bounds;
+    if (!element || !this.shouldRenderViolationElement(element)) {
+      return null;
+    }
+
+    const bounds = getElementBounds(element);
+
+    return bounds ? {bounds, element} : null;
+  }
+
+  private shouldRenderViolationElement(element: Element): boolean {
+    if (!isElementVisibleForOverlay(element)) {
+      return false;
+    }
+
+    const activeModal = getActiveModalElement();
+
+    return !activeModal || activeModal.contains(element);
+  }
+
+  private getRenderableViolations(): readonly KodeGlassViolation[] {
+    return this.getVisibleViolations().filter(violation => this.getViolationRenderTarget(violation));
+  }
+
+  private getCoverageRenderableViolations(): readonly KodeGlassViolation[] {
+    return this.getSourceFilteredViolations().filter(violation => violation.wcagCriteria?.length && this.getViolationRenderTarget(violation));
+  }
+
+  private getSourceFilteredCoverage(): AccessibilityReport['coverage'] {
+    if (!this.latestReport) {
+      return [];
+    }
+
+    return createWcagCoverage(
+      this.latestReport.auditSettings,
+      this.getSourceFilteredViolations(),
+      this.getSourceFilteredEngineStatuses(),
+    );
+  }
+
+  private getSourceFilteredViolations(): readonly KodeGlassViolation[] {
+    return this.latestReport?.violations.filter(violation => matchesViolationFilters(violation, this.violationFilters, {includeSeverityFilter: false})) ?? [];
+  }
+
+  private getSourceFilteredEngineStatuses(): AccessibilityReport['engineStatuses'] {
+    if (!this.latestReport || this.violationFilters.engine === 'both') {
+      return this.latestReport?.engineStatuses ?? [];
+    }
+
+    const engine = this.violationFilters.engine === 'axe' ? 'axe-core' : 'ibm-equal-access';
+
+    return this.latestReport.engineStatuses.filter(status => status.engine === engine);
   }
 
   private getVisibleViolations(): readonly KodeGlassViolation[] {
@@ -1382,6 +1660,80 @@ function truncateLabel(label: string): string {
   return label.length > 22 ? `${label.slice(0, 19).trim()}...` : label;
 }
 
+function formatCoverageCriteriaLabel(criteria: readonly string[]): string {
+  const visibleCriteria = criteria.slice(0, 2).join(', ');
+  const suffix = criteria.length > 2 ? ` +${criteria.length - 2}` : '';
+
+  return `WCAG ${visibleCriteria}${suffix}`;
+}
+
+function getViolationSummary(violation: KodeGlassViolation): string {
+  const summary = normalizeOverlayText(violation.title ?? violation.summary).replace(/^Fix any of the following:\s*/i, '');
+
+  if (violation.ruleId === 'button-name') {
+    return 'Button has no accessible name';
+  }
+
+  if (violation.ruleId === 'link-name') {
+    return 'Link has no accessible name';
+  }
+
+  if (violation.ruleId === 'color-contrast') {
+    return 'Text contrast is too low';
+  }
+
+  if (violation.ruleId === 'image-alt') {
+    return 'Image is missing alternate text';
+  }
+
+  if (violation.ruleId === 'target-size') {
+    return 'Tap target is too small';
+  }
+
+  return summary || violation.ruleId;
+}
+
+function getViolationFixText(violation: KodeGlassViolation): string {
+  const guidance = normalizeOverlayText(violation.guidance ?? '')
+    .replace(/^Fix (?:any|all) of the following:\s*/i, '')
+    .replace(/(?:Fix (?:any|all) of the following:)/gi, '')
+    .trim();
+
+  if (guidance) {
+    return guidance;
+  }
+
+  if (violation.ruleId === 'button-name') {
+    return 'Add visible button text, aria-label, aria-labelledby, or another valid accessible-name source.';
+  }
+
+  if (violation.ruleId === 'link-name') {
+    return 'Give the link meaningful visible text, aria-label, or aria-labelledby text that describes its destination or action.';
+  }
+
+  if (violation.ruleId === 'color-contrast') {
+    return 'Increase the contrast between foreground and background colors until the text meets the required WCAG contrast ratio.';
+  }
+
+  if (violation.ruleId === 'image-alt') {
+    return 'Add an alt attribute that describes the image purpose, or use alt="" only when the image is decorative.';
+  }
+
+  if (violation.ruleId === 'target-size') {
+    return 'Increase the clickable area or spacing so the target meets the required minimum size.';
+  }
+
+  return 'Review the failed rule, inspect this exact element, and update the markup, ARIA, text, focus behavior, or styling required by the rule.';
+}
+
+function normalizeOverlayText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function formatViolationEngines(engines: readonly KodeGlassViolation['engine'][]): string {
+  return [...new Set(engines)].join(', ');
+}
+
 function getAccessibleName(element: Element): string {
   return computeAccessibleName(element).replace(/\s+/g, ' ').trim().slice(0, 120);
 }
@@ -1534,4 +1886,43 @@ function getElementBySelector(selector: string): Element | null {
   } catch {
     return null;
   }
+}
+
+function getActiveModalElement(): HTMLElement | null {
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>('[aria-modal="true"]'))
+    .filter(element => !element.closest('kode-glass-overlay') && isElementVisibleForOverlay(element));
+
+  return candidates.at(-1) ?? null;
+}
+
+function isElementVisibleForOverlay(element: Element): boolean {
+  if (element.closest('kode-glass-overlay')) {
+    return false;
+  }
+
+  const bounds = getElementBounds(element);
+
+  if (!bounds) {
+    return false;
+  }
+
+  let current: Element | null = element;
+
+  while (current && current !== document.documentElement) {
+    if (current instanceof HTMLElement) {
+      if (current.hidden || current.inert) {
+        return false;
+      }
+
+      const styles = getComputedStyle(current);
+
+      if (styles.display === 'none' || styles.visibility === 'hidden' || Number(styles.opacity) === 0) {
+        return false;
+      }
+    }
+
+    current = current.parentElement;
+  }
+
+  return true;
 }

@@ -586,7 +586,7 @@ textarea {
   top: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--kg-gap-sm);
 }
 
@@ -932,10 +932,258 @@ textarea {
 }
 
 .structure-grid,
+.coverage-page,
 .report-panel,
 .report-section {
   display: grid;
   gap: var(--kg-gap-md);
+}
+
+.coverage-hero,
+.coverage-progress,
+.coverage-section {
+  display: grid;
+  gap: var(--kg-gap-md);
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 16px;
+  background: var(--tui-background-base);
+  padding: var(--kg-gap-md);
+}
+
+.coverage-hero {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--tui-background-accent-1) 12%, transparent), transparent 48%),
+    var(--tui-background-base);
+}
+
+.coverage-hero-copy {
+  display: grid;
+  gap: 0.35rem;
+  min-inline-size: 0;
+}
+
+.coverage-hero h2 {
+  font: var(--tui-font-heading-6);
+}
+
+.coverage-hero p {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-s);
+  line-height: 1.35;
+}
+
+.coverage-orbit {
+  display: grid;
+  place-items: center;
+  inline-size: 5.25rem;
+  block-size: 5.25rem;
+  border: 1px solid color-mix(in srgb, var(--tui-background-accent-1) 32%, var(--tui-border-normal));
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, var(--tui-background-base) 56%, color-mix(in srgb, var(--tui-background-accent-1) 15%, transparent) 57%),
+    var(--tui-background-base);
+  color: var(--tui-text-secondary);
+  box-shadow: 0 12px 28px rgb(16 24 40 / 8%);
+  text-align: center;
+  font: var(--tui-font-text-xs-bold);
+}
+
+.coverage-orbit strong {
+  color: var(--tui-background-accent-1-pressed);
+  font: var(--tui-font-heading-6);
+}
+
+.coverage-orbit span {
+  margin-block-start: -1rem;
+}
+
+.coverage-progress-bar,
+.principle-track {
+  display: flex;
+  gap: 2px;
+  overflow: hidden;
+  min-block-size: 0.75rem;
+  border-radius: 999px;
+  background: var(--tui-background-base-alt);
+}
+
+.coverage-progress-segment,
+.principle-fill {
+  min-inline-size: 0;
+}
+
+.coverage-progress-segment--failed,
+.principle-fill--failed {
+  background: var(--tui-status-negative);
+}
+
+.coverage-progress-segment--passed,
+.principle-fill--passed {
+  background: var(--tui-status-positive);
+}
+
+.coverage-progress-segment--manual,
+.principle-fill--manual {
+  background: var(--tui-status-warning);
+}
+
+.coverage-progress-segment--untested {
+  background: var(--tui-status-neutral);
+}
+
+.coverage-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--kg-gap-sm);
+}
+
+.coverage-status-card {
+  display: grid;
+  gap: 0.25rem;
+  min-block-size: 4.25rem;
+  align-content: center;
+  border: 1px solid var(--tui-border-normal);
+  border-radius: 12px;
+  background: var(--tui-background-base-alt);
+  padding: 0.625rem;
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-xs-bold);
+}
+
+.coverage-status-card strong {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-heading-6);
+}
+
+.coverage-status-card--failed strong {
+  color: var(--tui-status-negative);
+}
+
+.coverage-status-card--passed strong {
+  color: var(--tui-status-positive);
+}
+
+.coverage-status-card--manual strong {
+  color: var(--tui-status-warning);
+}
+
+.coverage-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kg-gap-sm);
+}
+
+.coverage-section-header span {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-xs-bold);
+}
+
+.principle-grid,
+.coverage-list {
+  display: grid;
+  gap: var(--kg-gap-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.principle-card {
+  display: grid;
+  gap: 0.625rem;
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 76%, transparent);
+  border-radius: 12px;
+  background: var(--tui-background-base-alt);
+  padding: 0.75rem;
+}
+
+.principle-card > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kg-gap-sm);
+}
+
+.principle-card strong,
+.coverage-list span {
+  color: var(--tui-text-primary);
+  font: var(--tui-font-text-s-bold);
+}
+
+.principle-card span,
+.coverage-list small {
+  color: var(--tui-text-secondary);
+  font: var(--tui-font-text-xs);
+}
+
+.coverage-list li {
+  display: block;
+}
+
+.coverage-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--kg-gap-sm);
+  inline-size: 100%;
+  align-items: start;
+  border: 1px solid color-mix(in srgb, var(--tui-border-normal) 76%, transparent);
+  border-radius: 12px;
+  background: var(--tui-background-base-alt);
+  padding: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.coverage-row:disabled {
+  cursor: default;
+}
+
+.coverage-row:not(:disabled):hover,
+.coverage-row--focused {
+  border-color: color-mix(in srgb, var(--tui-background-accent-1-pressed) 44%, var(--tui-border-normal));
+  background: color-mix(in srgb, var(--tui-background-accent-1) 9%, var(--tui-background-base));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--tui-background-accent-1) 14%, transparent);
+}
+
+.coverage-list strong {
+  min-inline-size: 4rem;
+  border-radius: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  color: #fff;
+  font: var(--tui-font-text-xs-bold);
+  text-align: center;
+}
+
+.coverage-list--failed strong {
+  background: var(--tui-status-negative);
+}
+
+.coverage-list--manual strong {
+  background: var(--tui-status-warning);
+}
+
+.coverage-list--passed strong {
+  background: var(--tui-status-positive);
+}
+
+.coverage-list--untested strong {
+  background: var(--tui-status-neutral);
+}
+
+.coverage-list div {
+  display: grid;
+  gap: 0.25rem;
+  min-inline-size: 0;
+}
+
+.coverage-list span,
+.coverage-list small {
+  overflow-wrap: anywhere;
 }
 
 .report-section h2 {
@@ -1125,13 +1373,15 @@ textarea {
 
   .stats,
   .report-scorecard,
-  .severity-row {
+  .severity-row,
+  .coverage-status-grid {
     grid-template-columns: 1fr;
   }
 
   .primary-actions,
   .report-header,
-  .focus-filter {
+  .focus-filter,
+  .coverage-hero {
     grid-template-columns: 1fr;
   }
 

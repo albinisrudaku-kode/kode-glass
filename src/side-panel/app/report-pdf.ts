@@ -1,5 +1,5 @@
 import {jsPDF} from 'jspdf';
-import type {AccessibilityReport, KodeGlassViolation, ViolationFilterSettings, ViolationSeverity} from '../../shared/accessibility-report';
+import type {AccessibilityReport, KodeGlassViolation, ViolationFilterSettings, ViolationSeverity, WcagCoverageStatus} from '../../shared/accessibility-report';
 
 export interface PdfEvidenceImage {
   readonly caption: string;
@@ -65,6 +65,7 @@ export async function buildFilteredReportPdf(input: BuildReportPdfInput): Promis
   drawScanContext(layout, input);
   drawSeveritySummary(layout, input.visibleViolations, input.report.violations.length);
   drawEngineStatusTable(layout, input.report.engineStatuses);
+  drawWcagCoverageSummary(layout, input.report);
 
   drawSectionTitle(layout, 'Remediation Plan', 'Highest-impact issue families grouped for triage.');
   drawRemediationPlan(layout, input.visibleViolations);
@@ -281,6 +282,7 @@ function drawScanContext(layout: PdfLayout, input: BuildReportPdfInput): void {
     ['Page', input.report.pageTitle || 'Untitled page'],
     ['URL', input.report.pageUrl],
     ['Generated', formatDateTime(input.createdAt)],
+    ['Scan scopes', formatScanScopes(input.report)],
     ['Filters', `${formatFilterEngine(input.violationFilters.engine)} | ${formatEnabledSeverities(input.violationFilters)} | ${input.selectedComponentLabel ?? 'All components'}`],
   ], {linkLabels: new Set(['URL'])});
   layout.addGap(12);
@@ -375,7 +377,7 @@ function drawEngineStatusTable(layout: PdfLayout, statuses: AccessibilityReport[
     return;
   }
 
-  drawTableHeader(layout, ['Engine', 'Status', 'Findings', 'Duration'], [0, 210, 330, 425]);
+  drawTableHeader(layout, ['Engine', 'Status', 'Findings', 'Scopes', 'Duration'], [0, 190, 300, 370, 440]);
 
   for (const status of statuses) {
     const errorLines = status.error ? splitText(document, status.error, layout.contentWidth - 18) : [];
@@ -392,8 +394,9 @@ function drawEngineStatusTable(layout: PdfLayout, statuses: AccessibilityReport[
     document.text(status.status.toUpperCase(), layout.marginLeft + 210, y + 15);
     document.setFont('helvetica', 'normal');
     document.setTextColor(...mutedInk);
-    document.text(String(status.violations), layout.marginLeft + 330, y + 15);
-    document.text(`${status.durationMs}ms`, layout.marginLeft + 425, y + 15);
+    document.text(String(status.violations), layout.marginLeft + 300, y + 15);
+    document.text(String(status.scopes ?? '-'), layout.marginLeft + 370, y + 15);
+    document.text(`${status.durationMs}ms`, layout.marginLeft + 440, y + 15);
 
     if (status.error) {
       document.setTextColor(...critical);
@@ -401,6 +404,65 @@ function drawEngineStatusTable(layout: PdfLayout, statuses: AccessibilityReport[
     }
 
     layout.cursorY += rowHeight + 2;
+  }
+
+  layout.addGap(18);
+}
+
+function drawWcagCoverageSummary(layout: PdfLayout, report: AccessibilityReport): void {
+  if (!report.coverage.length) {
+    return;
+  }
+
+  const failedCount = countCoverageStatus(report, 'failed');
+  const passedCount = countCoverageStatus(report, 'passed-automated');
+  const manualCount = countCoverageStatus(report, 'needs-manual-review');
+  const notTestedCount = countCoverageStatus(report, 'not-tested');
+  const reviewItems = report.coverage
+    .filter(item => item.status === 'failed' || item.status === 'needs-manual-review')
+    .slice(0, 10);
+  const document = layout.document;
+
+  layout.ensureSpace(82);
+  document.setFont('helvetica', 'bold');
+  document.setFontSize(12);
+  document.setTextColor(...ink);
+  document.text('WCAG Coverage', layout.marginLeft, layout.cursorY);
+  layout.cursorY += 18;
+
+  drawText(layout, `Failed ${failedCount} | Passed automated checks ${passedCount} | Needs manual review ${manualCount} | Not tested ${notTestedCount}`, {
+    color: mutedInk,
+    fontSize: 10,
+    gapAfter: 10,
+    lineHeight: 12,
+    width: layout.contentWidth,
+  });
+
+  if (!reviewItems.length) {
+    drawEmptyState(layout, 'No WCAG criteria have mapped failures or manual review prompts.');
+    layout.addGap(14);
+
+    return;
+  }
+
+  drawTableHeader(layout, ['Status', 'Criterion', 'Title', 'Findings'], [0, 92, 170, 450]);
+
+  for (const item of reviewItems) {
+    layout.ensureSpace(34);
+    const y = layout.cursorY;
+    document.setDrawColor(...faintBorder);
+    document.line(layout.marginLeft, y + 31, layout.marginLeft + layout.contentWidth, y + 31);
+    document.setFont('helvetica', 'bold');
+    document.setFontSize(8.8);
+    document.setTextColor(...coverageStatusColor(item.status));
+    document.text(formatCoverageStatus(item.status), layout.marginLeft, y + 14);
+    document.setTextColor(...ink);
+    document.text(`${item.criterionId} ${item.level}`, layout.marginLeft + 92, y + 14);
+    document.setFont('helvetica', 'normal');
+    document.setTextColor(...mutedInk);
+    document.text(splitText(document, item.title, 260).slice(0, 1), layout.marginLeft + 170, y + 14);
+    document.text(String(item.violationIds.length || '-'), layout.marginLeft + 450, y + 14);
+    layout.cursorY += 33;
   }
 
   layout.addGap(18);
@@ -868,6 +930,35 @@ function formatFilterEngine(engine: ViolationFilterSettings['engine']): string {
   }
 
   return 'axe + IBM Equal Access';
+}
+
+function formatScanScopes(report: AccessibilityReport): string {
+  const overlayCount = report.scanScopes.filter(scope => scope.kind === 'overlay').length;
+  const totalElements = report.scanScopes.reduce((total, scope) => total + scope.elementCount, 0);
+
+  return `${report.scanScopes.length} scopes, ${overlayCount} overlays, ${totalElements} scoped elements`;
+}
+
+function countCoverageStatus(report: AccessibilityReport, status: WcagCoverageStatus): number {
+  return report.coverage.filter(item => item.status === status).length;
+}
+
+function formatCoverageStatus(status: WcagCoverageStatus): string {
+  return ({
+    failed: 'Failed',
+    'needs-manual-review': 'Manual',
+    'not-tested': 'Not tested',
+    'passed-automated': 'Passed',
+  } as Record<WcagCoverageStatus, string>)[status];
+}
+
+function coverageStatusColor(status: WcagCoverageStatus): Rgb {
+  return ({
+    failed: critical,
+    'needs-manual-review': warning,
+    'not-tested': mutedInk,
+    'passed-automated': success,
+  } as Record<WcagCoverageStatus, Rgb>)[status];
 }
 
 function formatViolationEngines(violation: KodeGlassViolation): string {

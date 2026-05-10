@@ -49,7 +49,7 @@ export function getElementBounds(element: Element): ElementBounds | undefined {
 }
 
 export function getElementSelector(element: Element): string {
-  if (element.id) {
+  if (element.id && isUniqueElementId(element)) {
     return `#${CSS.escape(element.id)}`;
   }
 
@@ -62,6 +62,17 @@ export function getElementSelector(element: Element): string {
   }
 
   return parts.join(' > ');
+}
+
+function isUniqueElementId(element: Element): boolean {
+  const id = CSS.escape(element.id);
+  const ownerDocument = element.ownerDocument ?? document;
+
+  try {
+    return ownerDocument.querySelectorAll(`#${id}`).length === 1;
+  } catch {
+    return false;
+  }
 }
 
 function getLandmarkRole(element: HTMLElement): string {

@@ -3,13 +3,13 @@ import {FormsModule} from '@angular/forms';
 import {TuiAppearance, TuiButton, TuiFilterByInputPipe, TuiIcon, TuiLoader, TuiRoot, TuiSlider} from '@taiga-ui/core';
 import {TuiLink} from '@taiga-ui/core/components/link';
 import {TuiAccordion, TuiBadge, TuiButtonGroup, TuiChevron, TuiChip, TuiComboBox, TuiDataListWrapper, TuiFilter, TuiSwitch} from '@taiga-ui/kit';
-import type {AuditStandard, ComponentScopeOption, EvidenceCaptureMode, LayerName, ViolationEngineFilter, ViolationSeverity} from '../../shared/accessibility-report';
+import type {AuditStandard, ComponentScopeOption, EvidenceCaptureMode, LayerName, ViolationEngineFilter, ViolationSeverity, WcagCoverageItem} from '../../shared/accessibility-report';
 import {SidePanelStateService, type PreviewMode, type ViolationGroup} from './side-panel-state.service';
 
-type PanelTab = 'violations' | 'structure' | 'report';
+type PanelTab = 'violations' | 'coverage' | 'structure' | 'report';
 type PanelView = 'main' | 'settings';
 type Theme = 'light' | 'dark';
-type LayerFilterItem = 'Errors' | 'Landmarks' | 'Focus';
+type LayerFilterItem = 'Coverage' | 'Errors' | 'Landmarks' | 'Focus';
 type RollbackMinutes = 1 | 3 | 5;
 
 interface PanelTabItem {
@@ -36,17 +36,6 @@ interface ComponentScopeSelectItem {
   readonly label: string;
   readonly scope: ComponentScopeOption;
 }
-
-const layerFilterSelections: Record<string, readonly LayerFilterItem[]> = {
-  '000': [],
-  '001': ['Errors'],
-  '010': ['Landmarks'],
-  '011': ['Errors', 'Landmarks'],
-  '100': ['Focus'],
-  '101': ['Errors', 'Focus'],
-  '110': ['Landmarks', 'Focus'],
-  '111': ['Errors', 'Landmarks', 'Focus'],
-};
 
 @Component({
   selector: 'kode-glass-root',
@@ -97,12 +86,28 @@ export class AppComponent {
 
     return readerMode.inspectWithMouse ? 'inspect' : 'off';
   });
-  protected readonly layerFilterItems: readonly LayerFilterItem[] = ['Errors', 'Landmarks', 'Focus'];
+  protected readonly layerFilterItems: readonly LayerFilterItem[] = ['Errors', 'Coverage', 'Landmarks', 'Focus'];
   protected readonly selectedLayerFilters = computed(() => {
     const visibility = this.state.layerVisibility();
-    const selectionKey = `${Number(visibility.focusPath)}${Number(visibility.landmarks)}${Number(visibility.errors)}`;
+    const selectedFilters: LayerFilterItem[] = [];
 
-    return layerFilterSelections[selectionKey] ?? layerFilterSelections['000'];
+    if (visibility.errors) {
+      selectedFilters.push('Errors');
+    }
+
+    if (visibility.coverage) {
+      selectedFilters.push('Coverage');
+    }
+
+    if (visibility.landmarks) {
+      selectedFilters.push('Landmarks');
+    }
+
+    if (visibility.focusPath) {
+      selectedFilters.push('Focus');
+    }
+
+    return selectedFilters;
   });
   protected readonly voiceComboItems = computed(() => ['System default', ...this.state.voiceOptions().map(voice => voice.label)]);
   protected readonly selectedVoiceLabel = computed(() => {
@@ -151,6 +156,7 @@ export class AppComponent {
   });
   protected readonly tabs: readonly PanelTabItem[] = [
     {id: 'violations', label: 'Violations'},
+    {id: 'coverage', label: 'Coverage'},
     {id: 'structure', label: 'Structure'},
     {id: 'report', label: 'Report'},
   ];
@@ -196,7 +202,14 @@ export class AppComponent {
     });
 
     effect(() => {
-      if (this.state.selectedComponentScope() || this.state.selectedViolation()) {
+      if (this.state.selectedComponentScope()) {
+        this.activeTab.set('violations');
+        this.scrollToViolations();
+
+        return;
+      }
+
+      if (this.state.selectedViolation() && this.activeTab() !== 'coverage') {
         this.activeTab.set('violations');
         this.scrollToViolations();
       }
@@ -364,20 +377,31 @@ export class AppComponent {
 
   protected setLayerFilters(filters: readonly LayerFilterItem[] | null): void {
     const selectedFilters = new Set(filters ?? []);
-
-    this.state.setLayerVisibility({
-      errors: selectedFilters.has('Errors'),
+    const currentVisibility = this.state.layerVisibility();
+    const findingLayer = this.resolveFindingLayerSelection(selectedFilters, currentVisibility);
+    const nextVisibility = {
+      coverage: findingLayer === 'coverage',
+      errors: findingLayer === 'errors',
       focusPath: selectedFilters.has('Focus'),
       landmarks: selectedFilters.has('Landmarks'),
-      pageOverlay: this.state.layerVisibility().pageOverlay,
-    });
+      pageOverlay: currentVisibility.pageOverlay,
+    };
+
+    this.state.setLayerVisibility(nextVisibility);
+    this.selectTabForFindingLayer(nextVisibility);
   }
 
   protected setPageOverlayEnabled(pageOverlay: boolean): void {
-    this.state.setLayerVisibility({
+    const nextVisibility = {
       ...this.state.layerVisibility(),
       pageOverlay,
-    });
+    };
+
+    this.state.setLayerVisibility(nextVisibility);
+
+    if (pageOverlay) {
+      this.selectTabForFindingLayer(nextVisibility);
+    }
   }
 
   protected setPreviewMode(mode: PreviewMode): void {
@@ -462,12 +486,74 @@ export class AppComponent {
     this.activeTab.set(tab);
   }
 
+  protected selectCoverageItem(item: WcagCoverageItem): void {
+    const violationId = item.violationIds[0];
+    const violation = violationId ? this.state.violations().find(candidate => candidate.id === violationId) : undefined;
+
+    if (!violation) {
+      return;
+    }
+
+    this.state.setLayerVisibility({
+      ...this.state.layerVisibility(),
+      coverage: true,
+      errors: false,
+      pageOverlay: true,
+    });
+    this.state.setSelectedViolation({selector: violation.selector, violationId: violation.id});
+    this.activeTab.set('coverage');
+  }
+
+  protected isCoverageItemFocused(item: WcagCoverageItem): boolean {
+    const selectedViolation = this.state.selectedViolation();
+
+    return Boolean(selectedViolation && item.violationIds.includes(selectedViolation.violationId));
+  }
+
   protected toggleLayer(layerName: LayerName): void {
     this.state.toggleLayer(layerName);
   }
 
   protected togglePageOverlay(): void {
     this.state.togglePageOverlay();
+  }
+
+  private resolveFindingLayerSelection(
+    selectedFilters: ReadonlySet<LayerFilterItem>,
+    currentVisibility: {readonly coverage: boolean; readonly errors: boolean},
+  ): 'coverage' | 'errors' | null {
+    const wantsCoverage = selectedFilters.has('Coverage');
+    const wantsErrors = selectedFilters.has('Errors');
+
+    if (wantsCoverage && wantsErrors) {
+      return !currentVisibility.coverage && currentVisibility.errors ? 'coverage' : 'errors';
+    }
+
+    if (wantsCoverage) {
+      return 'coverage';
+    }
+
+    if (wantsErrors) {
+      return 'errors';
+    }
+
+    return null;
+  }
+
+  private selectTabForFindingLayer(visibility: {readonly coverage: boolean; readonly errors: boolean; readonly pageOverlay: boolean}): void {
+    if (!visibility.pageOverlay) {
+      return;
+    }
+
+    if (visibility.errors) {
+      this.activeTab.set('violations');
+
+      return;
+    }
+
+    if (visibility.coverage) {
+      this.activeTab.set('coverage');
+    }
   }
 
   protected copyReport(): void {

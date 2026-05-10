@@ -2,31 +2,49 @@ import axe from 'axe-core';
 import type {AccessibilityReport, AuditSettings, AuditStandard, KodeGlassViolation} from '../accessibility-report';
 import {normalizeAxeViolations} from './axe-report-normalizer';
 import {collectHeadings, collectLandmarks} from './dom-summary';
+import {findInteractiveNameViolations} from './interactive-name-guard';
+import {collectAccessibilityScanScopes, toScanScopeSummaries, type AccessibilityScanScope} from './scan-scopes';
+import {createWcagCoverage, enrichViolationsWithWcagCriteria} from '../wcag-coverage';
 
 export async function analyzeCurrentPage(auditSettings: AuditSettings): Promise<AccessibilityReport> {
   const startedAt = performance.now();
-  const violations = await analyzeWithAxe(auditSettings);
+  const scanScopes = collectAccessibilityScanScopes();
+  const violations = enrichViolationsWithWcagCriteria(await analyzeWithAxe(auditSettings, scanScopes));
+  const engineStatuses = [{durationMs: Math.round(performance.now() - startedAt), engine: 'axe-core' as const, label: 'axe', scopes: scanScopes.length, status: 'completed' as const, violations: violations.length}];
 
   return {
     auditSettings,
-    engineStatuses: [{durationMs: Math.round(performance.now() - startedAt), engine: 'axe-core', label: 'axe', status: 'completed', violations: violations.length}],
+    coverage: createWcagCoverage(auditSettings, violations, engineStatuses),
+    engineStatuses,
     generatedAt: Date.now(),
     headings: collectHeadings(),
     landmarks: collectLandmarks(),
     pageTitle: document.title || 'Untitled page',
     pageUrl: location.href,
+    scanScopes: toScanScopeSummaries(scanScopes),
     violations,
   };
 }
 
-export async function analyzeWithAxe(auditSettings: AuditSettings): Promise<readonly KodeGlassViolation[]> {
-  const results = await runAxe(auditSettings);
+export async function analyzeWithAxe(
+  auditSettings: AuditSettings,
+  scanScopes: readonly AccessibilityScanScope[] = collectAccessibilityScanScopes(),
+): Promise<readonly KodeGlassViolation[]> {
+  const violations: KodeGlassViolation[] = [];
 
-  return normalizeAxeViolations(results.violations);
+  for (const scanScope of scanScopes) {
+    const result = await runAxe(auditSettings, scanScope.root);
+
+    violations.push(...normalizeAxeViolations(result.violations, scanScope.root));
+  }
+
+  violations.push(...findInteractiveNameViolations(auditSettings, scanScopes));
+
+  return violations;
 }
 
-async function runAxe(auditSettings: AuditSettings): Promise<axe.AxeResults> {
-  return axe.run(document, {
+async function runAxe(auditSettings: AuditSettings, root: Document | Element): Promise<axe.AxeResults> {
+  return axe.run(root, {
     resultTypes: ['violations'],
     runOnly: {
       type: 'tag',

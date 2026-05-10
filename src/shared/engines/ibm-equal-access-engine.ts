@@ -1,6 +1,7 @@
 import {Checker} from 'accessibility-checker-engine/ace-node.js';
 import type {AuditSettings, AuditStandard, KodeGlassViolation, ViolationSeverity} from '../accessibility-report';
 import {getElementBounds, getElementSelector} from './dom-summary';
+import {collectAccessibilityScanScopes, type AccessibilityScanScope} from './scan-scopes';
 
 type IbmResultValueKind = 'VIOLATION' | 'RECOMMENDATION' | 'INFORMATION';
 type IbmResultValueOutcome = 'FAIL' | 'MANUAL' | 'PASS' | 'POTENTIAL';
@@ -40,17 +41,24 @@ interface IbmEngineReport {
 
 const ibmHelpBaseUrl = 'https://www.ibm.com/able/requirements/checker-rule-sets/';
 
-export async function analyzeWithIbmEqualAccess(auditSettings: AuditSettings): Promise<readonly KodeGlassViolation[]> {
+export async function analyzeWithIbmEqualAccess(
+  auditSettings: AuditSettings,
+  scanScopes: readonly AccessibilityScanScope[] = collectAccessibilityScanScopes(),
+): Promise<readonly KodeGlassViolation[]> {
   const policies = getIbmPolicies(auditSettings.standard);
 
   if (policies.length === 0) {
     return [];
   }
 
-  const checker = new Checker();
-  const report = await checker.check(document, [...policies]) as IbmEngineReport;
+  const reports: IbmEngineReport[] = [];
 
-  return normalizeIbmViolations(report.results ?? []);
+  for (const scanScope of scanScopes) {
+    const checker = new Checker();
+    reports.push(await checker.check(scanScope.root, [...policies]) as IbmEngineReport);
+  }
+
+  return normalizeIbmViolations(reports.flatMap(report => report.results ?? []));
 }
 
 function normalizeIbmViolations(results: readonly IbmEngineResult[]): readonly KodeGlassViolation[] {

@@ -1,6 +1,6 @@
 export type ViolationSeverity = 'critical' | 'warning' | 'info';
 
-export type LayerName = 'errors' | 'focusPath' | 'landmarks' | 'pageOverlay';
+export type LayerName = 'coverage' | 'errors' | 'focusPath' | 'landmarks' | 'pageOverlay';
 
 export type AuditStandard = 'wcag2a' | 'wcag2aa' | 'wcag2aaa' | 'best-practice';
 
@@ -8,11 +8,26 @@ export type AccessibilityEngine = 'axe-core' | 'ibm-equal-access' | 'playwright'
 
 export type AccessibilityEngineRunStatus = 'completed' | 'failed' | 'skipped';
 
+export type WcagCriterionLevel = 'A' | 'AA' | 'AAA';
+
+export type WcagCoverageStatus = 'failed' | 'passed-automated' | 'needs-manual-review' | 'not-tested';
+
+export interface WcagCoverageItem {
+  readonly criterionId: string;
+  readonly level: WcagCriterionLevel;
+  readonly principle: 'Perceivable' | 'Operable' | 'Understandable' | 'Robust';
+  readonly relatedRuleIds: readonly string[];
+  readonly status: WcagCoverageStatus;
+  readonly title: string;
+  readonly violationIds: readonly string[];
+}
+
 export interface AccessibilityEngineStatus {
   readonly durationMs: number;
   readonly engine: AccessibilityEngine;
   readonly error?: string;
   readonly label: string;
+  readonly scopes?: number;
   readonly status: AccessibilityEngineRunStatus;
   readonly violations: number;
 }
@@ -122,6 +137,7 @@ export interface KodeGlassViolation {
   readonly sourceEngines?: readonly AccessibilityEngine[];
   readonly summary: string;
   readonly title?: string;
+  readonly wcagCriteria?: readonly string[];
 }
 
 export interface HeadingSummary {
@@ -137,14 +153,27 @@ export interface LandmarkSummary {
   readonly selector: string;
 }
 
+export type ScanScopeKind = 'document' | 'overlay';
+
+export interface ScanScopeSummary {
+  readonly bounds?: ElementBounds;
+  readonly elementCount: number;
+  readonly id: string;
+  readonly kind: ScanScopeKind;
+  readonly label: string;
+  readonly selector: string;
+}
+
 export interface AccessibilityReport {
   readonly auditSettings: AuditSettings;
+  readonly coverage: readonly WcagCoverageItem[];
   readonly engineStatuses: readonly AccessibilityEngineStatus[];
   readonly generatedAt: number;
   readonly headings: readonly HeadingSummary[];
   readonly landmarks: readonly LandmarkSummary[];
   readonly pageTitle: string;
   readonly pageUrl: string;
+  readonly scanScopes: readonly ScanScopeSummary[];
   readonly violations: readonly KodeGlassViolation[];
 }
 

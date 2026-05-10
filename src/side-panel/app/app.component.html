@@ -120,6 +120,10 @@
               <strong>{{ state.totalLandmarks() }}</strong>
               <span tuiBadge size="s" appearance="positive">Landmarks</span>
             </span>
+            <span class="metric">
+              <strong>{{ state.totalOverlayScopes() }}</strong>
+              <span tuiBadge size="s" appearance="info">Overlays</span>
+            </span>
           </div>
         </tui-loader>
       }
@@ -152,6 +156,24 @@
           <tui-icon icon="@tui.rotate-ccw" />
         </button>
       </div>
+
+      @if (state.pageReport()) {
+        <div class="tool-group source-control" aria-label="Audit source filter">
+          <span class="eyebrow">Source</span>
+          <div class="engine-filter-row" tuiAppearance="secondary" tuiButtonGroup aria-label="Audit source filter">
+            @for (engineFilter of violationEngineFilters; track engineFilter.id) {
+              <button
+                type="button"
+                [class.active]="state.violationEngineFilter() === engineFilter.id"
+                [attr.aria-pressed]="state.violationEngineFilter() === engineFilter.id"
+                (click)="setViolationEngineFilter(engineFilter.id)"
+              >
+                {{ engineFilter.label }}
+              </button>
+            }
+          </div>
+        </div>
+      }
 
       @if (state.pageReport()) {
         <div class="tool-group">
@@ -401,22 +423,6 @@
                   }
                 </div>
               </div>
-
-              <div class="filter-group">
-                <span class="eyebrow">Source</span>
-                <div class="engine-filter-row" tuiAppearance="secondary" tuiButtonGroup aria-label="Violation source filter">
-                  @for (engineFilter of violationEngineFilters; track engineFilter.id) {
-                    <button
-                      type="button"
-                      [class.active]="state.violationEngineFilter() === engineFilter.id"
-                      [attr.aria-pressed]="state.violationEngineFilter() === engineFilter.id"
-                      (click)="setViolationEngineFilter(engineFilter.id)"
-                    >
-                      {{ engineFilter.label }}
-                    </button>
-                  }
-                </div>
-              </div>
             </section>
 
             @if (state.hasVisibleViolations()) {
@@ -541,6 +547,170 @@
           }
         }
 
+        @case ('coverage') {
+          @if (state.coverage().length) {
+            <div class="coverage-page">
+              <section class="coverage-hero" aria-label="WCAG coverage summary">
+                <div class="coverage-hero-copy">
+                  <span class="eyebrow">WCAG 2.2 {{ state.auditSettings().standard === 'wcag2a' ? 'A' : 'AA' }}</span>
+                  <h2>Audit coverage</h2>
+                  <p>{{ state.coverageCompletionPercent() }}% has automated evidence. Manual checks keep the audit honest.</p>
+                </div>
+
+                <div class="coverage-orbit" aria-hidden="true">
+                  <strong>{{ state.coverageCompletionPercent() }}%</strong>
+                  <span>mapped</span>
+                </div>
+              </section>
+
+              <section class="coverage-progress" aria-label="Coverage status distribution">
+                <div class="coverage-progress-bar">
+                  <span class="coverage-progress-segment coverage-progress-segment--failed" [style.flex-grow]="state.coverageStatusCounts().failed"></span>
+                  <span class="coverage-progress-segment coverage-progress-segment--passed" [style.flex-grow]="state.coverageStatusCounts()['passed-automated']"></span>
+                  <span class="coverage-progress-segment coverage-progress-segment--manual" [style.flex-grow]="state.coverageStatusCounts()['needs-manual-review']"></span>
+                  <span class="coverage-progress-segment coverage-progress-segment--untested" [style.flex-grow]="state.coverageStatusCounts()['not-tested']"></span>
+                </div>
+
+                <div class="coverage-status-grid">
+                  <span class="coverage-status-card coverage-status-card--failed">
+                    <strong>{{ state.coverageStatusCounts().failed }}</strong>
+                    <span>Failed criteria</span>
+                  </span>
+                  <span class="coverage-status-card coverage-status-card--passed">
+                    <strong>{{ state.coverageStatusCounts()['passed-automated'] }}</strong>
+                    <span>Automated pass</span>
+                  </span>
+                  <span class="coverage-status-card coverage-status-card--manual">
+                    <strong>{{ state.coverageStatusCounts()['needs-manual-review'] }}</strong>
+                    <span>Manual review</span>
+                  </span>
+                  <span class="coverage-status-card coverage-status-card--untested">
+                    <strong>{{ state.coverageStatusCounts()['not-tested'] }}</strong>
+                    <span>Not tested</span>
+                  </span>
+                </div>
+              </section>
+
+              <section class="coverage-section" aria-label="Coverage by WCAG principle">
+                <div class="coverage-section-header">
+                  <h2>Principles</h2>
+                  <span>{{ state.coverage().length }} criteria in scope</span>
+                </div>
+
+                <div class="principle-grid">
+                  @for (principle of state.coveragePrinciples(); track principle.principle) {
+                    <article class="principle-card">
+                      <div>
+                        <strong>{{ principle.principle }}</strong>
+                        <span>{{ principle.total }} criteria</span>
+                      </div>
+                      <div class="principle-track" aria-hidden="true">
+                        <span class="principle-fill principle-fill--failed" [style.flex-grow]="principle.failed"></span>
+                        <span class="principle-fill principle-fill--passed" [style.flex-grow]="principle.passed"></span>
+                        <span class="principle-fill principle-fill--manual" [style.flex-grow]="principle.manual"></span>
+                      </div>
+                    </article>
+                  }
+                </div>
+              </section>
+
+              <section class="coverage-section" aria-label="Failed WCAG criteria">
+                <div class="coverage-section-header">
+                  <h2>Failed criteria</h2>
+                  <span>{{ state.failedCoverage().length }} mapped</span>
+                </div>
+
+                @if (state.failedCoverage().length) {
+                  <ul class="coverage-list coverage-list--failed">
+                    @for (item of state.failedCoverage(); track item.criterionId) {
+                      <li>
+                        <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
+                          <strong>{{ item.criterionId }} {{ item.level }}</strong>
+                          <div>
+                            <span>{{ item.title }}</span>
+                            <small>{{ item.violationIds.length }} {{ item.violationIds.length === 1 ? 'finding' : 'findings' }} · {{ item.relatedRuleIds.join(', ') || 'mapped rule' }}</small>
+                          </div>
+                        </button>
+                      </li>
+                    }
+                  </ul>
+                } @else {
+                  <p class="report-note">No mapped WCAG criteria are currently failing automated checks.</p>
+                }
+              </section>
+
+              <section class="coverage-section" aria-label="Manual review queue">
+                <div class="coverage-section-header">
+                  <h2>Manual review queue</h2>
+                  <span>{{ state.manualReviewCoverage().length }} remaining</span>
+                </div>
+
+                <ul class="coverage-list coverage-list--manual">
+                  @for (item of state.manualReviewCoverage(); track item.criterionId) {
+                    <li>
+                      <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
+                        <strong>{{ item.criterionId }} {{ item.level }}</strong>
+                        <div>
+                          <span>{{ item.title }}</span>
+                          <small>{{ item.principle }} · needs human judgment</small>
+                        </div>
+                      </button>
+                    </li>
+                  }
+                </ul>
+              </section>
+
+              <section class="coverage-section" aria-label="Automated pass coverage">
+                <div class="coverage-section-header">
+                  <h2>Automated pass</h2>
+                  <span>{{ state.passedAutomatedCoverage().length }} checked</span>
+                </div>
+
+                <ul class="coverage-list coverage-list--passed">
+                  @for (item of state.passedAutomatedCoverage(); track item.criterionId) {
+                    <li>
+                      <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
+                        <strong>{{ item.criterionId }} {{ item.level }}</strong>
+                        <div>
+                          <span>{{ item.title }}</span>
+                          <small>{{ item.principle }} · automated checks found no mapped failures</small>
+                        </div>
+                      </button>
+                    </li>
+                  }
+                </ul>
+              </section>
+
+              <section class="coverage-section" aria-label="Not tested coverage">
+                <div class="coverage-section-header">
+                  <h2>Not tested</h2>
+                  <span>{{ state.notTestedCoverage().length }} criteria</span>
+                </div>
+
+                @if (state.notTestedCoverage().length) {
+                  <ul class="coverage-list coverage-list--untested">
+                    @for (item of state.notTestedCoverage(); track item.criterionId) {
+                      <li>
+                        <button class="coverage-row" type="button" [class.coverage-row--focused]="isCoverageItemFocused(item)" [disabled]="!item.violationIds.length" (click)="selectCoverageItem(item)">
+                          <strong>{{ item.criterionId }} {{ item.level }}</strong>
+                          <div>
+                            <span>{{ item.title }}</span>
+                            <small>{{ item.principle }} · no automated source completed for this criterion</small>
+                          </div>
+                        </button>
+                      </li>
+                    }
+                  </ul>
+                } @else {
+                  <p class="report-note">Every automated criterion has either evidence or a mapped finding for this source.</p>
+                }
+              </section>
+            </div>
+          } @else {
+            <p class="empty-state">No WCAG coverage data for this audit scope</p>
+          }
+        }
+
         @case ('report') {
           @if (state.pageReport(); as report) {
             <div class="surface report-panel">
@@ -569,7 +739,29 @@
                   <strong>{{ state.reportSeverityCounts().info }}</strong>
                   <span>Info</span>
                 </span>
+                <span class="report-overview-item">
+                  <strong>{{ state.totalOverlayScopes() }}</strong>
+                  <span>Overlays scanned</span>
+                </span>
               </section>
+
+              @if (state.overlayScanScopes().length) {
+                <section class="report-section">
+                  <div class="report-section-header">
+                    <h2>Overlay coverage</h2>
+                    <span>{{ state.overlayScanScopes().length }} scanned</span>
+                  </div>
+
+                  <ul class="summary-list">
+                    @for (scope of state.overlayScanScopes(); track scope.id) {
+                      <li>
+                        <strong>{{ scope.label }}</strong>
+                        <span>{{ scope.elementCount }} elements · {{ scope.selector }}</span>
+                      </li>
+                    }
+                  </ul>
+                </section>
+              }
 
               <section class="report-section">
                 <div class="report-section-header">

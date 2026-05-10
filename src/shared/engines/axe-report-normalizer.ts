@@ -1,16 +1,16 @@
 import type {Result, NodeResult} from 'axe-core';
 import type {KodeGlassViolation, ViolationSeverity} from '../accessibility-report';
-import {getElementBounds} from './dom-summary';
+import {getElementBounds, getElementSelector} from './dom-summary';
 
-export function normalizeAxeViolations(results: readonly Result[]): readonly KodeGlassViolation[] {
+export function normalizeAxeViolations(results: readonly Result[], root: Document | Element = document): readonly KodeGlassViolation[] {
   return results.flatMap(result =>
-    result.nodes.map((node, nodeIndex) => normalizeAxeNode(result, node, nodeIndex)),
+    result.nodes.map((node, nodeIndex) => normalizeAxeNode(result, node, nodeIndex, root)),
   );
 }
 
-function normalizeAxeNode(result: Result, node: NodeResult, nodeIndex: number): KodeGlassViolation {
-  const selector = getAxeTargets(node).map(formatAxeTarget).join(', ');
-  const element = getAxeTargetElement(node);
+function normalizeAxeNode(result: Result, node: NodeResult, nodeIndex: number, root: Document | Element): KodeGlassViolation {
+  const element = getAxeTargetElement(node, root);
+  const selector = element ? getElementSelector(element) : getAxeTargets(node).map(formatAxeTarget).join(', ');
 
   return {
     bounds: element ? getElementBounds(element) : undefined,
@@ -40,7 +40,7 @@ function getViolationSeverity(impact: Result['impact']): ViolationSeverity {
   }
 }
 
-function getAxeTargetElement(node: NodeResult): Element | null {
+function getAxeTargetElement(node: NodeResult, root: Document | Element): Element | null {
   const cssSelectors: string[] = [];
 
   for (const target of getAxeTargets(node)) {
@@ -50,7 +50,7 @@ function getAxeTargetElement(node: NodeResult): Element | null {
   }
 
   for (const selector of cssSelectors) {
-    const element = findElementByCssSelector(selector);
+    const element = findElementByCssSelector(selector, root);
 
     if (element) {
       return element;
@@ -61,7 +61,7 @@ function getAxeTargetElement(node: NodeResult): Element | null {
     return null;
   }
 
-  return findElementByCssSelector(cssSelectors.join(', '));
+  return findElementByCssSelector(cssSelectors.join(', '), root);
 }
 
 function getAxeTargets(node: NodeResult): readonly unknown[] {
@@ -72,9 +72,9 @@ function formatAxeTarget(target: unknown): string {
   return typeof target === 'string' ? target : JSON.stringify(target);
 }
 
-function findElementByCssSelector(cssSelector: string): Element | null {
+function findElementByCssSelector(cssSelector: string, root: Document | Element): Element | null {
   try {
-    return document.querySelector(cssSelector);
+    return root.querySelector(cssSelector);
   } catch {
     return null;
   }

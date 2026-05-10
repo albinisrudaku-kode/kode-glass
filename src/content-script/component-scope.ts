@@ -11,15 +11,22 @@ interface AngularWindow extends Window {
   readonly ng?: AngularDebugApi;
 }
 
+const overlayComponentInventorySelector = [
+  '.cdk-overlay-container',
+  '.cdk-overlay-container *',
+  '.cdk-global-overlay-wrapper',
+  '.cdk-global-overlay-wrapper *',
+  '.cdk-overlay-popover',
+  '.cdk-overlay-popover *',
+  '.cdk-overlay-pane',
+  '.cdk-overlay-pane *',
+].join(',');
+
 export function collectDetectedComponentOptions(): readonly ComponentScopeOption[] {
   const componentMap = new Map<string, ComponentScopeOption>();
-  const allElements = document.querySelectorAll('*');
-  const maxElements = 4000;
-  const upperBound = Math.min(allElements.length, maxElements);
+  const elements = collectComponentInventoryElements();
 
-  for (let index = 0; index < upperBound; index += 1) {
-    const element = allElements[index];
-
+  for (const element of elements) {
     if (!(element instanceof HTMLElement)) {
       continue;
     }
@@ -34,6 +41,25 @@ export function collectDetectedComponentOptions(): readonly ComponentScopeOption
   }
 
   return [...componentMap.values()].sort((first, second) => first.label.localeCompare(second.label));
+}
+
+function collectComponentInventoryElements(): readonly Element[] {
+  const allElements = document.querySelectorAll('*');
+  const maxElements = 4000;
+  const upperBound = Math.min(allElements.length, maxElements);
+  const elements = new Set<Element>();
+
+  for (let index = 0; index < upperBound; index += 1) {
+    const element = allElements[index];
+
+    if (element) {
+      elements.add(element);
+    }
+  }
+
+  document.querySelectorAll(overlayComponentInventorySelector).forEach(element => elements.add(element));
+
+  return [...elements];
 }
 
 export function enrichViolationsWithComponentScope(

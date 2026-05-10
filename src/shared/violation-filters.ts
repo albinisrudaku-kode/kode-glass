@@ -1,7 +1,7 @@
 import type {KodeGlassViolation, ViolationFilterSettings} from './accessibility-report';
 
 export const initialViolationFilterSettings: ViolationFilterSettings = {
-  engine: 'both',
+  engine: 'axe',
   severity: {
     critical: true,
     info: true,
